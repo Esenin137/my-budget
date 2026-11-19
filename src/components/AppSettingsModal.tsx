@@ -738,6 +738,35 @@ export default function AppSettingsModal({
           </div>
         </div>
       )}
+
+      <div className="mt-4 pt-3 border-t border-[var(--line)] flex items-center justify-between gap-2 text-[11px] text-slate-400">
+        <span>Версия 2.4 · WebWorker + f32</span>
+        <button
+          type="button"
+          onClick={async () => {
+            try {
+              if ('serviceWorker' in navigator) {
+                const regs = await navigator.serviceWorker.getRegistrations();
+                await Promise.all(regs.map((r) => r.unregister()));
+              }
+              if (typeof caches !== 'undefined') {
+                const keys = await caches.keys();
+                await Promise.all(
+                  keys
+                    .filter((k) => !k.toLowerCase().includes('webllm') && !k.toLowerCase().includes('mlc'))
+                    .map((k) => caches.delete(k))
+                );
+              }
+            } catch {
+              // ignore
+            }
+            window.location.reload();
+          }}
+          className="px-2.5 py-1 rounded-lg bg-[var(--fld)] border border-[var(--line)] text-slate-200 font-semibold hover:bg-white/10 cursor-pointer transition"
+        >
+          Обновить кэш
+        </button>
+      </div>
     </ModalShell>
   );
 }

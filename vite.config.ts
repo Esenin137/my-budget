@@ -59,9 +59,28 @@ export default defineConfig(() => {
         workbox: {
           globPatterns: ['**/*.{js,css,html,ico,png,svg,woff,woff2}'],
           maximumFileSizeToCacheInBytes: 8 * 1024 * 1024,
+          manifestTransforms: [
+            async (entries) => ({
+              manifest: entries.filter((entry) => !entry.size || entry.size < 2 * 1024 * 1024),
+            }),
+          ],
           navigateFallback: `${basePath}index.html`,
           navigateFallbackDenylist: [/^\/api\//],
           runtimeCaching: [
+            {
+              urlPattern: /\/assets\/.*\.js$/i,
+              handler: 'CacheFirst',
+              options: {
+                cacheName: 'app-lazy-chunks-cache',
+                expiration: {
+                  maxEntries: 12,
+                  maxAgeSeconds: 60 * 60 * 24 * 30,
+                },
+                cacheableResponse: {
+                  statuses: [0, 200],
+                },
+              },
+            },
             {
               urlPattern: /^https:\/\/fonts\.googleapis\.com\/.*/i,
               handler: 'CacheFirst',
