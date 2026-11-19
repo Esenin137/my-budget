@@ -1,0 +1,6 @@
+{
+  "name": "Мои финансы",
+  "description": "Персональный и семейный финансовый помощник с календарём задач, напоминаниями и голосовыми заметками с расшифровкой текста.",
+  "requestFramePermissions": ["microphone"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
