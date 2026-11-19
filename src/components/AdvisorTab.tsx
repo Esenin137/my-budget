@@ -266,6 +266,11 @@ export default function AdvisorTab({
         setMessages((prev) => [
           ...prev,
           { id: uid() + 1, isUser: false, html: `⚠️ ${msg}`, isError: true },
+          {
+            id: uid() + 2,
+            isUser: false,
+            html: `${localCheck.reply}\n\nℹ️ Пока нейросеть недоступна, ответ рассчитал встроенный офлайн-советник.`,
+          },
         ]);
       } finally {
         setBusyStage('idle');
