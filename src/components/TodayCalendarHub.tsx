@@ -32,7 +32,7 @@ interface UnifiedEvent {
   title: string;
   subtitle: string;
   amount?: number;
-  kind: 'task' | 'expense' | 'income' | 'family';
+  kind: 'task' | 'expense' | 'income' | 'recurring';
   done?: boolean;
   targetTab: TabId;
   targetDate?: string;
@@ -52,6 +52,26 @@ const WEEKDAYS = ['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Вс'];
 
 function addDays(base: Date, delta: number): Date {
   return new Date(base.getFullYear(), base.getMonth(), base.getDate() + delta);
+}
+
+function advanceRepeatDate(
+  baseYear: number,
+  baseMonth: number,
+  baseDay: number,
+  step: number,
+  freq: 'weekly' | 'monthly' | 'yearly'
+): Date {
+  if (freq === 'weekly') {
+    return new Date(baseYear, baseMonth, baseDay + step * 7);
+  }
+  if (freq === 'monthly') {
+    const targetMonth = baseMonth + step;
+    const maxDay = new Date(baseYear, targetMonth + 1, 0).getDate();
+    return new Date(baseYear, targetMonth, Math.min(baseDay, maxDay));
+  }
+  const targetYear = baseYear + step;
+  const maxDay = new Date(targetYear, baseMonth + 1, 0).getDate();
+  return new Date(targetYear, baseMonth, Math.min(baseDay, maxDay));
 }
 
 export default function TodayCalendarHub({
@@ -91,10 +111,12 @@ export default function TodayCalendarHub({
     return Array.from({ length: dim }, (_, i) => isoDate(new Date(year, month, i + 1)));
   }, [horizon, selectedIso, calMonth]);
 
-  // Build unified event feed across Tasks, Expenses, Income, and Family reminders
+  // Build unified event feed across Tasks, Expenses, Income, and scheduled Recurring payments
+  // (Family tab reminders/debts are kept strictly inside «Семья» as reference memos)
   const unifiedEvents = useMemo<UnifiedEvent[]>(() => {
     const out: UnifiedEvent[] = [];
     const dateSet = new Set(rangeDates);
+    const rangeEndIso = rangeDates[rangeDates.length - 1] || todayIso;
 
     // 1. Calendar tasks (including repeating tasks!)
     rangeDates.forEach((dIso) => {
@@ -118,14 +140,21 @@ export default function TodayCalendarHub({
       });
     });
 
-    // 2. Transactions (expenses & income) in range
+    // 2. Actual transactions (expenses & income) in range
+    const recordedByParentAndDate = new Set<string>();
     state.tx.forEach((tx) => {
+      if (tx.parentId) {
+        recordedByParentAndDate.add(`${tx.parentId}:${tx.d}`);
+      }
       if (!dateSet.has(tx.d)) return;
       out.push({
         id: `tx-${tx.id}`,
         date: tx.d,
         title: tx.n || tx.c,
-        subtitle: tx.t === 'in' ? `Доход · ${tx.c}` : `${tx.c} · ${tx.m}${tx.repeat && tx.repeat !== 'none' ? ' · повтор' : ''}`,
+        subtitle:
+          tx.t === 'in'
+            ? `Доход · ${tx.c}`
+            : `${tx.c} · ${tx.m}${tx.repeat && tx.repeat !== 'none' ? ' · повтор' : ''}`,
         amount: tx.a,
         kind: tx.t === 'in' ? 'income' : 'expense',
         targetTab: tx.t === 'in' ? 'budget' : 'expenses',
@@ -134,44 +163,40 @@ export default function TodayCalendarHub({
       });
     });
 
-    // 3. Unpaid Family reminders (shown on today/current range so they are never forgotten)
-    if (dateSet.has(todayIso)) {
-      const unpaidExp = (state.family?.expenses || []).filter((x) => !x.done);
-      const unpaidLoans = (state.family?.loans || []).filter((x) => !x.done);
-      unpaidExp.forEach((x) => {
-        out.push({
-          id: `fam-exp-${x.id}`,
-          date: todayIso,
-          title: x.name,
-          subtitle: 'Семья · постоянный платёж',
-          amount: x.amount,
-          kind: 'family',
-          targetTab: 'family',
-          targetSectionId: 'sec-fam-rem',
-        });
-      });
-      unpaidLoans.forEach((x) => {
-        out.push({
-          id: `fam-loan-${x.id}`,
-          date: todayIso,
-          title: x.name,
-          subtitle: 'Семья · кредит / ипотека',
-          amount: x.amount,
-          kind: 'family',
-          targetTab: 'family',
-          targetSectionId: 'sec-fam-rem',
-        });
-      });
-    }
+    // 3. Scheduled upcoming occurrences of user-created recurring expenses (repeat !== 'none')
+    state.tx.forEach((tx) => {
+      if (!tx.repeat || tx.repeat === 'none' || tx.parentId) return;
+      const parts = tx.d.split('-').map(Number);
+      if (parts.length !== 3 || parts.some(Number.isNaN)) return;
+      const [baseYear, baseMonth1, baseDay] = parts;
+      const baseMonth = baseMonth1 - 1;
+      for (let step = 1; step <= 500; step++) {
+        const nextIso = isoDate(advanceRepeatDate(baseYear, baseMonth, baseDay, step, tx.repeat));
+        if (nextIso > rangeEndIso) break;
+        if (dateSet.has(nextIso) && !recordedByParentAndDate.has(`${tx.id}:${nextIso}`)) {
+          out.push({
+            id: `rec-${tx.id}-${nextIso}`,
+            date: nextIso,
+            title: tx.n || tx.c,
+            subtitle: `Повторяющийся платёж · ${tx.c}`,
+            amount: tx.a,
+            kind: 'recurring',
+            targetTab: 'expenses',
+            targetDate: nextIso,
+            targetSectionId: 'sec-exp-list',
+          });
+        }
+      }
+    });
 
     return out.sort((a, b) => {
       if (a.date !== b.date) return a.date.localeCompare(b.date);
-      const kindOrder = { task: 0, family: 1, expense: 2, income: 3 };
+      const kindOrder = { task: 0, recurring: 1, expense: 2, income: 3 };
       if (Boolean(a.done) !== Boolean(b.done)) return a.done ? 1 : -1;
       if (kindOrder[a.kind] !== kindOrder[b.kind]) return kindOrder[a.kind] - kindOrder[b.kind];
       return (a.time || '99:99').localeCompare(b.time || '99:99');
     });
-  }, [rangeDates, state.tasks, state.tx, state.family, todayIso]);
+  }, [rangeDates, state.tasks, state.tx, todayIso]);
 
   // Dots map for the mini calendar
   const calCells = useMemo(() => {
@@ -216,7 +241,7 @@ export default function TodayCalendarHub({
   }, [calMonth, state.tasks, state.tx]);
 
   const openTasksCount = unifiedEvents.filter((e) => e.kind === 'task' && !e.done).length;
-  const familyCount = unifiedEvents.filter((e) => e.kind === 'family').length;
+  const recurringCount = unifiedEvents.filter((e) => e.kind === 'recurring').length;
 
   const horizonTitle =
     horizon === 'today'
@@ -231,7 +256,7 @@ export default function TodayCalendarHub({
     task: { dot: '#1EB4C9', badge: '📅', dest: 'Задачи ↗' },
     expense: { dot: '#F06253', badge: '🛒', dest: 'Расходы ↗' },
     income: { dot: '#19A886', badge: '💰', dest: 'Бюджет ↗' },
-    family: { dot: '#4F8CF0', badge: '👨‍👩‍👧', dest: 'Семья ↗' },
+    recurring: { dot: '#E5A93B', badge: '🔁', dest: 'Расходы ↗' },
   };
 
   return (
@@ -325,9 +350,9 @@ export default function TodayCalendarHub({
           </div>
           <span className="tabular-nums shrink-0 text-[11px]">
             Задач: <b className="text-slate-100">{openTasksCount}</b>
-            {familyCount > 0 && (
+            {recurringCount > 0 && (
               <>
-                {' · '}Платежей: <b className="text-amber-300">{familyCount}</b>
+                {' · '}Повтор.: <b className="text-amber-300">{recurringCount}</b>
               </>
             )}
           </span>
@@ -336,7 +361,7 @@ export default function TodayCalendarHub({
         {showHelp && (
           <div className="rounded-xl bg-white/[0.04] border border-white/10 px-3 py-2 text-[11.5px] leading-relaxed text-slate-300">
             <div className="font-bold text-emerald-300 mb-0.5">Единый центр дня</div>
-            Сюда стекаются события из всех разделов: задачи, траты, доходы и семейные платежи. Нажмите на любую строку, чтобы перейти к деталям, или откройте «Календарь» для обзора месяца.
+            Показывает события выбранного периода: задачи, траты, доходы и запланированные повторяющиеся платежи. Памятка долгов и постоянных расходов из раздела «Семья» сюда не попадает.
           </div>
         )}
 

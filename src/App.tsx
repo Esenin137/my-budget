@@ -744,7 +744,15 @@ export default function App() {
       <div className="hero">
         <header className="top-bar">
           <div className="brand-row">
-            <div className="brand-wordmark">Мои финансы</div>
+            <div className="brand-wordmark">
+              <img
+                src={`${import.meta.env.BASE_URL}pwa-192x192.png`}
+                alt="Мои финансы"
+                className="brand-icon"
+                referrerPolicy="no-referrer"
+              />
+              <span>Мои финансы</span>
+            </div>
 
             <div className="top-actions">
               <PWAInstallButton variant="icon" onInstalledToast={showToast} />
