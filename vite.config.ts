@@ -116,6 +116,9 @@ export default defineConfig(() => {
         },
       },
     ],
+    worker: {
+      format: 'es' as const,
+    },
     resolve: {
       alias: {
         '@': path.resolve(__dirname, '.'),

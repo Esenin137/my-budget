@@ -653,7 +653,9 @@ export default function AppSettingsModal({
                     >
                       <Download className="w-3.5 h-3.5" />
                       <span>
-                        {llmState.status === 'ready' && llmState.modelId === settings.localModelId
+                        {llmState.status === 'ready' &&
+                        (llmState.modelId === settings.localModelId ||
+                          llmState.modelId === settings.localModelId.replace('q4f16_1', 'q4f32_1'))
                           ? 'Модель готова офлайн'
                           : 'Загрузить в телефон'}
                       </span>

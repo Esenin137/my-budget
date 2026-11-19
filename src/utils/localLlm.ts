@@ -14,7 +14,28 @@ export const LOCAL_LLM_MODELS: LocalModelOption[] = [
     name: 'Qwen 2.5 · 0.5B',
     sizeLabel: '~390 МБ',
     badge: 'Для телефона',
-    description: 'Оптимальная модель для смартфонов. Хорошо понимает русский язык и стабильно работает в мобильной памяти GPU.',
+    description: 'Быстрая компактная модель для смартфонов. Хорошо понимает русский язык и бытовые финансовые вопросы.',
+  },
+  {
+    id: 'Qwen2.5-0.5B-Instruct-q4f32_1-MLC',
+    name: 'Qwen 2.5 · 0.5B (Adreno / f32)',
+    sizeLabel: '~450 МБ',
+    badge: 'Для Snapdragon',
+    description: 'Версия без f16-шейдеров — максимально стабильна на Qualcomm Snapdragon / Adreno (OnePlus, Samsung, Xiaomi), если f16 сбрасывает GPU.',
+  },
+  {
+    id: 'Qwen2.5-1.5B-Instruct-q4f16_1-MLC',
+    name: 'Qwen 2.5 · 1.5B',
+    sizeLabel: '~1.0 ГБ',
+    badge: 'Умнее',
+    description: 'Более подробные ответы на русском. Работает в отдельном потоке (Web Worker) с экономным буфером памяти.',
+  },
+  {
+    id: 'Qwen2.5-1.5B-Instruct-q4f32_1-MLC',
+    name: 'Qwen 2.5 · 1.5B (Adreno / f32)',
+    sizeLabel: '~1.1 ГБ',
+    badge: 'Snapdragon 1.5B',
+    description: 'Умная модель 1.5B без проблемных f16-шейдеров — специально для мощных смартфонов на Snapdragon 888 / 8 Gen с 8–12+ ГБ RAM.',
   },
   {
     id: 'SmolLM2-360M-Instruct-q4f16_1-MLC',
@@ -22,13 +43,6 @@ export const LOCAL_LLM_MODELS: LocalModelOption[] = [
     sizeLabel: '~260 МБ',
     badge: 'Ультралёгкая',
     description: 'Минимальный расход памяти и быстрая загрузка. Подходит для телефонов с небольшим объёмом RAM.',
-  },
-  {
-    id: 'Qwen2.5-1.5B-Instruct-q4f16_1-MLC',
-    name: 'Qwen 2.5 · 1.5B',
-    sizeLabel: '~1.0 ГБ (~1.6 ГБ VRAM)',
-    badge: 'Для ПК / флагманов',
-    description: 'Более подробные ответы на русском, но требует много видеопамяти WebGPU. На части смартфонов браузер может выгружать её из-за лимита GPU.',
   },
 ];
 
@@ -43,6 +57,7 @@ export interface LocalLlmState {
 type Listener = (state: LocalLlmState) => void;
 
 let engineInstance: MLCEngineInterface | null = null;
+let workerInstance: Worker | null = null;
 let loadedContextWindow = 1024;
 let currentState: LocalLlmState = {
   status: 'idle',
@@ -68,6 +83,25 @@ function isGpuContextLostError(err: unknown): boolean {
   return /mapasync|gpubuffer|instance reference|already been disposed|device.*lost|out of memory|oom|allocation failed|webgpu|vk_|context lost/i.test(
     raw
   );
+}
+
+async function disposeEngineAndWorker(): Promise<void> {
+  if (engineInstance) {
+    try {
+      await engineInstance.unload();
+    } catch {
+      // Already disposed GPU device — safe to ignore
+    }
+    engineInstance = null;
+  }
+  if (workerInstance) {
+    try {
+      workerInstance.terminate();
+    } catch {
+      // ignore
+    }
+    workerInstance = null;
+  }
 }
 
 export function isWebGpuSupported(): boolean {
@@ -125,51 +159,88 @@ export async function loadLocalModel(
   });
 
   try {
-    if (engineInstance) {
-      try {
-        await engineInstance.unload();
-      } catch {
-        // Already disposed GPU device — safe to ignore
+    await disposeEngineAndWorker();
+
+    // Preflight WebGPU adapter check (detects disabled GPU process or missing shader-f16 on Adreno)
+    let effectiveModelId = modelId;
+    try {
+      const gpuNav = (navigator as unknown as {
+        gpu?: { requestAdapter: () => Promise<{ features?: Set<string> } | null> };
+      }).gpu;
+      const adapter = gpuNav ? await gpuNav.requestAdapter() : null;
+      if (!adapter) {
+        emit({
+          status: 'error',
+          modelId: null,
+          progress: 0,
+          statusText: 'WebGPU временно недоступен',
+          error:
+            'Браузер не выдал доступ к WebGPU (после прошлых сбоев Android Chrome может временно отключить GPU до перезапуска). Полностью закройте браузер из недавних приложений, откройте снова и выберите модель «(Adreno / f32)».',
+        });
+        return false;
       }
-      engineInstance = null;
+      const hasF16 = Boolean(adapter.features && adapter.features.has('shader-f16'));
+      if (!hasF16 && effectiveModelId.includes('q4f16_1')) {
+        effectiveModelId = effectiveModelId.replace('q4f16_1', 'q4f32_1');
+      }
+    } catch {
+      // Proceed and let WebLLM report specific error
     }
 
     const webllm = await import('@mlc-ai/web-llm');
-    const engine = await webllm.CreateMLCEngine(
-      modelId,
-      {
-        initProgressCallback: (report) => {
-          const pct = Math.max(2, Math.min(100, Math.round((report.progress || 0) * 100)));
-          emit({
-            status: 'loading',
-            modelId,
-            progress: pct,
-            statusText: report.text || `Загрузка модели: ${pct}%`,
-            error: null,
-          });
-        },
+    const engineConfig = {
+      initProgressCallback: (report: { progress?: number; text?: string }) => {
+        const pct = Math.max(2, Math.min(100, Math.round((report.progress || 0) * 100)));
+        emit({
+          status: 'loading',
+          modelId: effectiveModelId,
+          progress: pct,
+          statusText: report.text || `Загрузка модели: ${pct}%`,
+          error: null,
+        });
       },
-      {
-        // Reduced KV-cache window dramatically lowers WebGPU VRAM usage on smartphones
-        context_window_size: targetCtx,
+    };
+    const chatOpts = {
+      // Reduced KV-cache window dramatically lowers WebGPU VRAM usage on smartphones
+      context_window_size: targetCtx,
+    };
+
+    let engine: MLCEngineInterface;
+    if (typeof Worker !== 'undefined') {
+      try {
+        const worker = new Worker(new URL('./llmWorker.ts', import.meta.url), {
+          type: 'module',
+        });
+        workerInstance = worker;
+        engine = await webllm.CreateWebWorkerMLCEngine(worker, effectiveModelId, engineConfig, chatOpts);
+      } catch {
+        // Fallback to main thread if module Worker cannot start in a restricted browser
+        await disposeEngineAndWorker();
+        engine = await webllm.CreateMLCEngine(effectiveModelId, engineConfig, chatOpts);
       }
-    );
+    } else {
+      engine = await webllm.CreateMLCEngine(effectiveModelId, engineConfig, chatOpts);
+    }
 
     engineInstance = engine;
     loadedContextWindow = targetCtx;
     emit({
       status: 'ready',
-      modelId,
+      modelId: effectiveModelId,
       progress: 100,
       statusText: 'Модель загружена и готова к работе офлайн',
       error: null,
     });
     return true;
   } catch (err: unknown) {
-    engineInstance = null;
+    await disposeEngineAndWorker();
     const raw = err instanceof Error ? err.message : 'Не удалось загрузить локальную модель.';
+    const shortRaw = raw.length > 140 ? `${raw.slice(0, 140)}…` : raw;
+    const isF16Model = modelId.includes('q4f16');
     const friendly = isGpuContextLostError(err)
-      ? 'Браузеру на телефоне не хватило видеопамяти WebGPU для этой модели. Переключитесь в Настройках на более лёгкую «Qwen 2.5 · 0.5B» (~390 МБ) или «Офлайн-Советник (0 МБ)».'
+      ? isF16Model
+        ? `Драйвер WebGPU сбросил модель формата f16. Выберите совместимый вариант «(Adreno / f32)» и перезапустите браузер. (${shortRaw})`
+        : `Браузер не смог запустить модель в WebGPU. Полностью перезапустите браузер или используйте «Офлайн-Советник (0 МБ)». (${shortRaw})`
       : raw;
     emit({
       status: 'error',
@@ -183,14 +254,7 @@ export async function loadLocalModel(
 }
 
 export async function unloadLocalModel(): Promise<void> {
-  if (engineInstance) {
-    try {
-      await engineInstance.unload();
-    } catch {
-      // ignore
-    }
-    engineInstance = null;
-  }
+  await disposeEngineAndWorker();
   emit({
     status: 'idle',
     modelId: null,
@@ -201,7 +265,7 @@ export async function unloadLocalModel(): Promise<void> {
 }
 
 export async function deleteLocalModelCache(modelId: string): Promise<void> {
-  if (currentState.modelId === modelId && engineInstance) {
+  if (currentState.modelId === modelId && (engineInstance || workerInstance)) {
     await unloadLocalModel();
   }
   try {
@@ -271,10 +335,10 @@ export async function askLocalLlm(
   try {
     return await runCompletion(engineInstance, question, financialSnapshot, history);
   } catch (err: unknown) {
-    // Mobile Chrome WebGPU frequently drops GPUDevice on OOM or app backgrounding/voice modal.
-    // Clean up the dead engine and try one automatic compact-VRAM recovery from local cache.
+    // Mobile Chrome WebGPU frequently drops GPUDevice on OOM, f16 driver bugs (Adreno 660),
+    // or voice/background transitions. Terminate the dead worker and try one clean compact-VRAM recovery.
     if (isGpuContextLostError(err)) {
-      engineInstance = null;
+      await disposeEngineAndWorker();
       emit({
         status: 'idle',
         modelId: null,
@@ -292,23 +356,23 @@ export async function askLocalLlm(
         try {
           return await runCompletion(engineInstance, question, financialSnapshot, []);
         } catch (retryErr: unknown) {
-          engineInstance = null;
+          await disposeEngineAndWorker();
           if (!isGpuContextLostError(retryErr)) {
             throw retryErr;
           }
         }
       }
 
-      const isBigModel = activeModelId.includes('1.5B');
-      const friendlyErr = isBigModel
-        ? 'На телефоне не хватило видеопамяти (WebGPU) для большой модели Qwen 2.5 · 1.5B (~1.6 ГБ VRAM) — браузер сбросил GPU. Откройте Настройки → ИИ и выберите «Qwen 2.5 · 0.5B» (~390 МБ) — она стабильно работает на смартфонах.'
-        : 'Браузер сбросил видеопамять WebGPU (обычно при сворачивании вкладки или нехватке памяти). Нажмите «Загрузить модель» снова или переключитесь на «Офлайн-Советник (0 МБ)».';
+      const isF16Model = activeModelId.includes('q4f16');
+      const friendlyErr = isF16Model
+        ? 'Драйвер WebGPU (часто на Snapdragon / Adreno) сбросил модель формата f16. Откройте Настройки → ИИ и выберите совместимый вариант «Qwen 2.5 · 1.5B (Adreno / f32)» или «Qwen 2.5 · 0.5B (Adreno / f32)» — они работают без f16-шейдеров.'
+        : 'Браузер сбросил видеопамять WebGPU. Попробуйте более лёгкую «Qwen 2.5 · 0.5B (Adreno / f32)» в Настройках → ИИ или используйте «Офлайн-Советник (0 МБ)».';
 
       emit({
         status: 'error',
         modelId: null,
         progress: 0,
-        statusText: 'Недостаточно памяти WebGPU',
+        statusText: 'Сброс видеопамяти WebGPU',
         error: friendlyErr,
       });
       throw new Error(friendlyErr);
