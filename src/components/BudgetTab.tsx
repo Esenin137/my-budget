@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { Pencil, Trash2 } from 'lucide-react';
 import { AppState, DepositItem, GoalScope, Transaction } from '../types';
 import {
@@ -80,11 +80,19 @@ export default function BudgetTab({
   const [depRule, setDepRule] = useState('');
   const [backupPass, setBackupPass] = useState('');
 
+  useEffect(() => {
+    setLimitInp(currentGoal.limit ? String(currentGoal.limit) : '');
+    setTargetInp(currentGoal.target ? String(currentGoal.target) : '');
+  }, [goalScope, currentGoal.limit, currentGoal.target]);
+
+  useEffect(() => {
+    if (!incName && !incAmt) {
+      setIncDate(isoDate(curDate));
+    }
+  }, [curDate, incName, incAmt]);
+
   const handleScopeSwitch = (sc: GoalScope) => {
     setGoalScope(sc);
-    const g = state.periodGoals[sc] || { limit: 0, target: 0 };
-    setLimitInp(g.limit ? String(g.limit) : '');
-    setTargetInp(g.target ? String(g.target) : '');
   };
 
   const goalPeriodTx = state.tx.filter((t) => isTxInPeriod(t.d, goalScope, curDate));

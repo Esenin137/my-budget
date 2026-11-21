@@ -5,7 +5,7 @@ const IDB_NAME = 'my-budget-idb-v2';
 const KV_STORE = 'kv';
 const AUDIO_STORE = 'audio_blobs';
 
-export const DEFAULT_LOCAL_MODEL_ID = 'Qwen2.5-0.5B-Instruct-q4f16_1-MLC';
+export const DEFAULT_LOCAL_MODEL_ID = 'Qwen2.5-0.5B-Instruct-q4f32_1-MLC';
 
 export function createDefaultUiSettings(): UiSettings {
   return {
@@ -22,7 +22,7 @@ export function createDefaultUiSettings(): UiSettings {
     heroSummaryStrip: true,
     heroSafePill: true,
     aiEnabled: true,
-    aiMode: 'cloud',
+    aiMode: 'offline',
     aiVoiceEnabled: true,
     aiQuickPrompts: true,
     localModelId: DEFAULT_LOCAL_MODEL_ID,
@@ -266,10 +266,14 @@ export function isEncryptedPackage(data: unknown): data is EncryptedPackage {
   return Boolean(data && typeof data === 'object' && (data as EncryptedPackage).enc === true && (data as EncryptedPackage).ct);
 }
 
-// IndexedDB with separate audio store + sequential write queue (fixes race condition!)
+// IndexedDB with separate audio store + cached connection + sequential write queue
+let cachedIdbPromise: Promise<IDBDatabase> | null = null;
+
 function openIdb(): Promise<IDBDatabase> {
-  return new Promise((resolve, reject) => {
+  if (cachedIdbPromise) return cachedIdbPromise;
+  cachedIdbPromise = new Promise<IDBDatabase>((resolve, reject) => {
     if (!('indexedDB' in window)) {
+      cachedIdbPromise = null;
       reject(new Error('IndexedDB unavailable'));
       return;
     }
@@ -279,9 +283,27 @@ function openIdb(): Promise<IDBDatabase> {
       if (!db.objectStoreNames.contains(KV_STORE)) db.createObjectStore(KV_STORE);
       if (!db.objectStoreNames.contains(AUDIO_STORE)) db.createObjectStore(AUDIO_STORE);
     };
-    req.onsuccess = () => resolve(req.result);
-    req.onerror = () => reject(req.error);
+    req.onsuccess = () => {
+      const db = req.result;
+      db.onclose = () => {
+        cachedIdbPromise = null;
+      };
+      db.onversionchange = () => {
+        db.close();
+        cachedIdbPromise = null;
+      };
+      resolve(db);
+    };
+    req.onerror = () => {
+      cachedIdbPromise = null;
+      reject(req.error);
+    };
+    req.onblocked = () => {
+      cachedIdbPromise = null;
+      reject(new Error('IndexedDB open blocked'));
+    };
   });
+  return cachedIdbPromise;
 }
 
 export async function idbGetKv<T>(key: string): Promise<T | undefined> {

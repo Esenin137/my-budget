@@ -58,6 +58,7 @@ export default defineConfig(() => {
         },
         workbox: {
           globPatterns: ['**/*.{js,css,html,ico,png,svg,woff,woff2}'],
+          globIgnores: ['**/assets/aistudio/**'],
           maximumFileSizeToCacheInBytes: 8 * 1024 * 1024,
           manifestTransforms: [
             async (entries) => ({

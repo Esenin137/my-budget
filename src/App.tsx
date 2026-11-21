@@ -37,6 +37,7 @@ import {
   persistAppState,
 } from './utils/storage';
 import {
+  advanceRepeatDate,
   analyzeFinancialHealth,
   formatMoney,
   getPeriodTitle,
@@ -44,6 +45,7 @@ import {
   isTaskDoneOnDate,
   isTaskOnDate,
   isTxInPeriod,
+  parseLocalIsoDate,
   uid,
   UniversalCommandResult,
 } from './utils/finance';
@@ -332,49 +334,86 @@ export default function App() {
     return () => window.clearInterval(timer);
   }, [storageReady, state.tasks, commitState]);
 
-  // Recurring transactions due
+  // Recurring transactions due (timezone-safe local dates + month-end clamp + loop guard)
   const dueRecurring = useMemo(() => {
     const today = new Date();
     today.setHours(0, 0, 0, 0);
-    const items: { parent: Transaction; next: Date }[] = [];
+    const todayIso = isoDate(today);
+    const items: { parent: Transaction; next: Date; nextIso: string }[] = [];
+
+    const existingChildDatesByParent = new Map<number, Set<string>>();
+    const latestDateByParent = new Map<number, string>();
+
+    state.tx.forEach((x) => {
+      if (!x.parentId) return;
+      const dIso = normDate(x.d);
+      let set = existingChildDatesByParent.get(x.parentId);
+      if (!set) {
+        set = new Set<string>();
+        existingChildDatesByParent.set(x.parentId, set);
+      }
+      set.add(dIso);
+      const prevMax = latestDateByParent.get(x.parentId);
+      if (!prevMax || dIso > prevMax) latestDateByParent.set(x.parentId, dIso);
+    });
+
     state.tx.forEach((t) => {
-      if (t.repeat && t.repeat !== 'none' && !t.parentId) {
-        let lastDate = new Date(t.d);
-        state.tx.forEach((x) => {
-          if (x.parentId === t.id) {
-            const xd = new Date(x.d);
-            if (xd > lastDate) lastDate = xd;
-          }
-        });
-        const checkDate = new Date(lastDate);
-        while (true) {
-          if (t.repeat === 'monthly') checkDate.setMonth(checkDate.getMonth() + 1);
-          else if (t.repeat === 'yearly') checkDate.setFullYear(checkDate.getFullYear() + 1);
-          else if (t.repeat === 'weekly') checkDate.setDate(checkDate.getDate() + 7);
-          else break;
-          if (checkDate <= today) items.push({ parent: t, next: new Date(checkDate) });
-          else break;
-        }
+      if (!t.repeat || t.repeat === 'none' || t.parentId) return;
+      const baseDt = parseLocalIsoDate(t.d);
+      if (!baseDt) return;
+
+      const baseY = baseDt.getFullYear();
+      const baseM = baseDt.getMonth();
+      const baseD = baseDt.getDate();
+      const baseIso = isoDate(baseDt);
+      const existingSet = existingChildDatesByParent.get(t.id);
+      const watermarkIso = latestDateByParent.get(t.id) || baseIso;
+
+      for (let step = 1; step <= 500; step++) {
+        const occ = advanceRepeatDate(baseY, baseM, baseD, step, t.repeat);
+        const occIso = isoDate(occ);
+        if (occIso > todayIso) break;
+        if (occIso <= watermarkIso) continue;
+        if (existingSet?.has(occIso)) continue;
+        items.push({ parent: t, next: occ, nextIso: occIso });
       }
     });
+
     return items;
   }, [state.tx]);
 
   const handleApplyRecurring = () => {
     if (!dueRecurring.length) return;
+    let addedCount = 0;
     const base = uid();
-    const additions: Transaction[] = dueRecurring.map((item, idx) => ({
-      id: base + idx,
-      parentId: item.parent.id,
-      t: 'out',
-      a: item.parent.a,
-      c: item.parent.c,
-      m: item.parent.m,
-      d: isoDate(item.next),
-      n: `${item.parent.n} (авто)`,
-    }));
-    commitState((prev) => ({ ...prev, tx: [...prev.tx, ...additions] }));
-    showToast(`Проведено платежей: ${additions.length}`);
+    commitState((prev) => {
+      const existingKeys = new Set<string>();
+      prev.tx.forEach((x) => {
+        if (x.parentId) existingKeys.add(`${x.parentId}:${normDate(x.d)}`);
+      });
+      const additions: Transaction[] = [];
+      dueRecurring.forEach((item, idx) => {
+        const key = `${item.parent.id}:${item.nextIso}`;
+        if (existingKeys.has(key)) return;
+        existingKeys.add(key);
+        additions.push({
+          id: base + idx,
+          parentId: item.parent.id,
+          t: 'out',
+          a: item.parent.a,
+          c: item.parent.c,
+          m: item.parent.m,
+          d: item.nextIso,
+          n: `${item.parent.n} (авто)`,
+        });
+      });
+      addedCount = additions.length;
+      if (!additions.length) return prev;
+      return { ...prev, tx: [...prev.tx, ...additions] };
+    });
+    if (addedCount > 0) {
+      showToast(`Проведено платежей: ${addedCount}`);
+    }
   };
 
   const periodTx = useMemo(
@@ -399,12 +438,21 @@ export default function App() {
 
   const shiftPeriod = (dir: -1 | 1) => {
     setCurDate((prev) => {
-      const next = new Date(prev.getFullYear(), prev.getMonth(), prev.getDate());
-      if (viewMode === 'day') next.setDate(next.getDate() + dir);
-      else if (viewMode === 'week') next.setDate(next.getDate() + dir * 7);
-      else if (viewMode === 'month') next.setMonth(next.getMonth() + dir);
-      else if (viewMode === 'year') next.setFullYear(next.getFullYear() + dir);
-      return next;
+      if (viewMode === 'day') {
+        return new Date(prev.getFullYear(), prev.getMonth(), prev.getDate() + dir);
+      }
+      if (viewMode === 'week') {
+        return new Date(prev.getFullYear(), prev.getMonth(), prev.getDate() + dir * 7);
+      }
+      if (viewMode === 'month') {
+        return new Date(prev.getFullYear(), prev.getMonth() + dir, 1);
+      }
+      if (viewMode === 'year') {
+        const targetYear = prev.getFullYear() + dir;
+        const maxDay = new Date(targetYear, prev.getMonth() + 1, 0).getDate();
+        return new Date(targetYear, prev.getMonth(), Math.min(prev.getDate(), maxDay));
+      }
+      return new Date(prev.getFullYear(), prev.getMonth(), prev.getDate());
     });
   };
 

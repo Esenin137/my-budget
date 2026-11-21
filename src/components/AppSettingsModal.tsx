@@ -716,6 +716,14 @@ export default function AppSettingsModal({
 
               {settings.aiMode === 'cloud' && (
                 <div className="rounded-xl bg-amber-500/12 border border-amber-400/40 p-2.5 space-y-1.5">
+                  {typeof window !== 'undefined' &&
+                    /\.github\.io$|\.pages\.dev$|\.netlify\.app$/i.test(window.location.hostname) && (
+                      <p className="text-[11px] leading-relaxed text-amber-200 font-semibold">
+                        ℹ️ На GitHub Pages нет серверного бэкенда для облачного ИИ — ответы будут
+                        автоматически рассчитываться встроенным Офлайн-Советником. Рекомендуем
+                        выбрать «Офлайн-Советник (0 МБ)» или «Локальную нейросеть (Adreno / f32)».
+                      </p>
+                    )}
                   <div className="flex items-center gap-1.5 text-xs font-extrabold text-amber-200">
                     <AlertTriangle className="w-4 h-4 shrink-0 text-amber-300" />
                     <span>Предупреждение о конфиденциальности</span>
@@ -740,7 +748,7 @@ export default function AppSettingsModal({
       )}
 
       <div className="mt-4 pt-3 border-t border-[var(--line)] flex items-center justify-between gap-2 text-[11px] text-slate-400">
-        <span>Версия 2.4 · WebWorker + f32</span>
+        <span>Версия 2.5 · Офлайн + WebWorker f32</span>
         <button
           type="button"
           onClick={async () => {

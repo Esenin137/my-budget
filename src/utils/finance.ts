@@ -61,6 +61,37 @@ export function fmtMonthName(dt: Date): string {
   return mStr.charAt(0).toUpperCase() + mStr.slice(1);
 }
 
+export function parseLocalIsoDate(isoStr: string): Date | null {
+  const m = normDate(isoStr).match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!m) return null;
+  const y = Number(m[1]);
+  const mo = Number(m[2]) - 1;
+  const d = Number(m[3]);
+  const dt = new Date(y, mo, d);
+  if (Number.isNaN(dt.getTime())) return null;
+  return dt;
+}
+
+export function advanceRepeatDate(
+  baseYear: number,
+  baseMonth: number,
+  baseDay: number,
+  step: number,
+  freq: 'weekly' | 'monthly' | 'yearly'
+): Date {
+  if (freq === 'weekly') {
+    return new Date(baseYear, baseMonth, baseDay + step * 7);
+  }
+  if (freq === 'monthly') {
+    const targetMonth = baseMonth + step;
+    const maxDay = new Date(baseYear, targetMonth + 1, 0).getDate();
+    return new Date(baseYear, targetMonth, Math.min(baseDay, maxDay));
+  }
+  const targetYear = baseYear + step;
+  const maxDay = new Date(targetYear, baseMonth + 1, 0).getDate();
+  return new Date(targetYear, baseMonth, Math.min(baseDay, maxDay));
+}
+
 export function getWeekBounds(dt: Date): { start: string; end: string; mon: Date; sun: Date } {
   const d = new Date(dt.getFullYear(), dt.getMonth(), dt.getDate());
   const day = d.getDay();
@@ -859,9 +890,12 @@ export function parseUniversalCommand(rawPhrase: string, cats: CategoryTuple[]):
       const dayNum = rest.match(/(\d{1,2})\s*(?:-?го\s+)?числ[аоеу]/i);
       if (dayNum) {
         const dNum = Math.min(31, Math.max(1, parseInt(dayNum[1], 10)));
-        const candidate = new Date(now.getFullYear(), now.getMonth(), dNum);
-        if (candidate.getTime() < new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime()) {
-          candidate.setMonth(candidate.getMonth() + 1);
+        const todayMidnight = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+        const maxCur = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
+        let candidate = new Date(now.getFullYear(), now.getMonth(), Math.min(dNum, maxCur));
+        if (candidate.getTime() < todayMidnight) {
+          const maxNext = new Date(now.getFullYear(), now.getMonth() + 2, 0).getDate();
+          candidate = new Date(now.getFullYear(), now.getMonth() + 1, Math.min(dNum, maxNext));
         }
         targetDate = isoDate(candidate);
         rest = rest.replace(dayNum[0], '');

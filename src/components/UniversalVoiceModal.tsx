@@ -98,21 +98,42 @@ export default function UniversalVoiceModal({
       const rec: any = new SR();
       rec.lang = 'ru-RU';
       rec.interimResults = true;
+      rec.continuous = false;
       rec.maxAlternatives = 1;
       startMsRef.current = Date.now();
 
-      rec.onresult = (ev: { results?: ArrayLike<ArrayLike<{ transcript?: string }>> }) => {
-        let txt = '';
-        if (ev.results) {
-          for (let i = 0; i < ev.results.length; i++) {
-            txt += ev.results[i]?.[0]?.transcript || '';
+      rec.onresult = (ev: {
+        results?: ArrayLike<{ isFinal?: boolean; [idx: number]: { transcript?: string } }>;
+      }) => {
+        if (!ev.results) return;
+        const finals: string[] = [];
+        let interim = '';
+        for (let i = 0; i < ev.results.length; i++) {
+          const item = ev.results[i];
+          const text = (item?.[0]?.transcript || '').trim();
+          if (!text) continue;
+          if (item.isFinal) {
+            if (finals[finals.length - 1]?.toLowerCase() !== text.toLowerCase()) {
+              finals.push(text);
+            }
+          } else {
+            interim = text;
           }
         }
-        if (txt.trim()) setPhrase(txt.trim());
+        const combined = [...finals, interim].filter(Boolean).join(' ').replace(/\s+/g, ' ').trim();
+        if (combined) setPhrase(combined);
       };
-      rec.onerror = () => {
+      rec.onerror = (ev: { error?: string }) => {
         cleanup();
-        setError('Не удалось распознать речь. Попробуйте повторить или введите текст.');
+        const code = ev?.error || '';
+        if (code === 'aborted') return;
+        if (code === 'not-allowed' || code === 'service-not-allowed') {
+          setError('Нет доступа к микрофону. Разрешите микрофон в настройках браузера.');
+        } else if (code === 'no-speech') {
+          setError('Речь не услышана. Нажмите на микрофон и произнесите фразу чётче.');
+        } else {
+          setError('Не удалось распознать речь. Попробуйте повторить или введите текст.');
+        }
       };
       rec.onend = () => cleanup();
 
@@ -145,8 +166,11 @@ export default function UniversalVoiceModal({
       return;
     }
 
-    // Use local browser SpeechRecognition if offline/local-llm mode
-    if (aiMode !== 'cloud') {
+    const isStaticHost =
+      typeof window !== 'undefined' && /\.github\.io$|\.pages\.dev$|\.netlify\.app$/i.test(window.location.hostname);
+
+    // Use local browser SpeechRecognition if offline/local-llm mode or on static hosting without /api/transcribe
+    if (aiMode !== 'cloud' || isStaticHost) {
       startBrowserSpeech();
       return;
     }

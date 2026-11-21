@@ -379,17 +379,38 @@ export default function AdvisorTab({
       cancelRecordingRef.current = false;
       recordStartRef.current = Date.now();
 
-      rec.onresult = (ev: { results?: ArrayLike<ArrayLike<{ transcript?: string }>> }) => {
-        const transcript = ev.results?.[0]?.[0]?.transcript?.trim() || '';
+      rec.onresult = (ev: {
+        results?: ArrayLike<{ isFinal?: boolean; [idx: number]: { transcript?: string } }>;
+      }) => {
+        if (!ev.results) return;
+        const parts: string[] = [];
+        for (let i = 0; i < ev.results.length; i++) {
+          const text = (ev.results[i]?.[0]?.transcript || '').trim();
+          if (text && parts[parts.length - 1]?.toLowerCase() !== text.toLowerCase()) {
+            parts.push(text);
+          }
+        }
+        const transcript = parts.join(' ').replace(/\s+/g, ' ').trim();
         const cancelled = cancelRecordingRef.current;
         cleanupRecordingHandles();
         if (!cancelled && transcript) {
-          askQuestion(transcript, true);
+          // Give Android's system speech overlay a brief moment to release audio/GPU focus before running WebLLM
+          window.setTimeout(() => {
+            askQuestion(transcript, true);
+          }, 160);
         }
       };
-      rec.onerror = () => {
+      rec.onerror = (ev: { error?: string }) => {
         cleanupRecordingHandles();
-        setVoiceError('Не удалось распознать речь через браузер. Попробуйте ещё раз или введите текстом.');
+        const code = ev?.error || '';
+        if (code === 'aborted') return;
+        if (code === 'not-allowed' || code === 'service-not-allowed') {
+          setVoiceError('Нет доступа к микрофону. Разрешите микрофон в настройках браузера.');
+        } else if (code === 'no-speech') {
+          setVoiceError('Речь не распознана. Нажмите на микрофон и произнесите вопрос ещё раз.');
+        } else {
+          setVoiceError('Не удалось распознать речь через браузер. Попробуйте ещё раз или введите текстом.');
+        }
       };
       rec.onend = () => {
         if (speechRecRef.current) cleanupRecordingHandles();
@@ -412,14 +433,17 @@ export default function AdvisorTab({
     if (busyStage !== 'idle' || isRecording) return;
     setVoiceError(null);
 
-    // Keep voice 100% local/private when user chose Offline or Local LLM mode
-    if (uiSettings.aiMode !== 'cloud') {
+    const isStaticHost =
+      typeof window !== 'undefined' && /\.github\.io$|\.pages\.dev$|\.netlify\.app$/i.test(window.location.hostname);
+
+    // Keep voice 100% local/private when user chose Offline/Local LLM mode or when hosted on static GitHub Pages
+    if (uiSettings.aiMode !== 'cloud' || isStaticHost) {
       startLocalSpeechRecognition();
       return;
     }
 
     if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-      setVoiceError('Ваш браузер не поддерживает запись с микрофона.');
+      startLocalSpeechRecognition();
       return;
     }
 

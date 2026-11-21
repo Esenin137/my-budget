@@ -10,18 +10,18 @@ export interface LocalModelOption {
 
 export const LOCAL_LLM_MODELS: LocalModelOption[] = [
   {
-    id: 'Qwen2.5-0.5B-Instruct-q4f16_1-MLC',
-    name: 'Qwen 2.5 · 0.5B',
-    sizeLabel: '~390 МБ',
-    badge: 'Для телефона',
-    description: 'Быстрая компактная модель для смартфонов. Хорошо понимает русский язык и бытовые финансовые вопросы.',
-  },
-  {
     id: 'Qwen2.5-0.5B-Instruct-q4f32_1-MLC',
     name: 'Qwen 2.5 · 0.5B (Adreno / f32)',
     sizeLabel: '~450 МБ',
-    badge: 'Для Snapdragon',
-    description: 'Версия без f16-шейдеров — максимально стабильна на Qualcomm Snapdragon / Adreno (OnePlus, Samsung, Xiaomi), если f16 сбрасывает GPU.',
+    badge: 'Рекомендуется',
+    description: 'Версия без f16-шейдеров — максимально стабильна на Android / Snapdragon (OnePlus, Samsung, Xiaomi) и на ПК.',
+  },
+  {
+    id: 'Qwen2.5-0.5B-Instruct-q4f16_1-MLC',
+    name: 'Qwen 2.5 · 0.5B (f16)',
+    sizeLabel: '~390 МБ',
+    badge: 'Компактная',
+    description: 'Быстрая компактная модель с f16-шейдерами. Если ваш GPU не поддерживает f16, автоматически переключится на f32.',
   },
   {
     id: 'Qwen2.5-1.5B-Instruct-q4f16_1-MLC',

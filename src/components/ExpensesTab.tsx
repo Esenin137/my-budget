@@ -1,4 +1,4 @@
-import React, { useMemo, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Camera, Mic, Pencil, Search, Trash2, X } from 'lucide-react';
 import { CategoryTuple, PeriodMode, RepeatFreq, Transaction } from '../types';
 import {
@@ -59,7 +59,27 @@ export default function ExpensesTab({
   const [listening, setListening] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
 
-  const recRef = useRef<{ stop: () => void } | null>(null);
+  const recRef = useRef<{ stop: () => void; abort?: () => void } | null>(null);
+
+  useEffect(() => {
+    if (!previewItems) {
+      setPreviewDate(isoDate(curDate));
+    }
+  }, [curDate, previewItems]);
+
+  useEffect(() => {
+    return () => {
+      if (recRef.current) {
+        try {
+          if (recRef.current.abort) recRef.current.abort();
+          else recRef.current.stop();
+        } catch {
+          // ignore
+        }
+        recRef.current = null;
+      }
+    };
+  }, []);
 
   const runParse = (inputStr?: string) => {
     const raw = (inputStr ?? sayText).trim();
@@ -80,25 +100,23 @@ export default function ExpensesTab({
   };
 
   const handleVoicePhrase = () => {
+    type RecInstance = {
+      lang: string;
+      interimResults: boolean;
+      continuous?: boolean;
+      maxAlternatives?: number;
+      onresult:
+        | ((e: { results: ArrayLike<{ isFinal?: boolean; [idx: number]: { transcript?: string } }> }) => void)
+        | null;
+      onerror: ((e: { error?: string }) => void) | null;
+      onend: (() => void) | null;
+      start: () => void;
+      stop: () => void;
+      abort?: () => void;
+    };
     const w = window as unknown as {
-      SpeechRecognition?: new () => {
-        lang: string;
-        interimResults: boolean;
-        onresult: ((e: { results: ArrayLike<ArrayLike<{ transcript: string }>> }) => void) | null;
-        onerror: (() => void) | null;
-        onend: (() => void) | null;
-        start: () => void;
-        stop: () => void;
-      };
-      webkitSpeechRecognition?: new () => {
-        lang: string;
-        interimResults: boolean;
-        onresult: ((e: { results: ArrayLike<ArrayLike<{ transcript: string }>> }) => void) | null;
-        onerror: (() => void) | null;
-        onend: (() => void) | null;
-        start: () => void;
-        stop: () => void;
-      };
+      SpeechRecognition?: new () => RecInstance;
+      webkitSpeechRecognition?: new () => RecInstance;
     };
     const SR = w.SpeechRecognition || w.webkitSpeechRecognition;
     if (!SR) {
@@ -106,7 +124,11 @@ export default function ExpensesTab({
       return;
     }
     if (listening && recRef.current) {
-      recRef.current.stop();
+      try {
+        recRef.current.stop();
+      } catch {
+        // ignore
+      }
       setListening(false);
       return;
     }
@@ -114,19 +136,46 @@ export default function ExpensesTab({
       const rec = new SR();
       rec.lang = 'ru-RU';
       rec.interimResults = true;
+      rec.continuous = false;
+      rec.maxAlternatives = 1;
       let latest = '';
       rec.onresult = (e) => {
-        let s = '';
-        for (let i = 0; i < e.results.length; i++) s += e.results[i][0].transcript;
-        latest = s;
-        setSayText(s);
+        const finals: string[] = [];
+        let interim = '';
+        for (let i = 0; i < e.results.length; i++) {
+          const item = e.results[i];
+          const text = (item?.[0]?.transcript || '').trim();
+          if (!text) continue;
+          if (item.isFinal) {
+            if (finals[finals.length - 1]?.toLowerCase() !== text.toLowerCase()) {
+              finals.push(text);
+            }
+          } else {
+            interim = text;
+          }
+        }
+        const combined = [...finals, interim].filter(Boolean).join(' ').replace(/\s+/g, ' ').trim();
+        if (combined) {
+          latest = combined;
+          setSayText(combined);
+        }
       };
-      rec.onerror = () => {
+      rec.onerror = (e) => {
         setListening(false);
-        setHint('Не удалось распознать речь. Введите текстом.');
+        recRef.current = null;
+        const code = e?.error || '';
+        if (code === 'aborted') return;
+        if (code === 'not-allowed' || code === 'service-not-allowed') {
+          setHint('Нет доступа к микрофону. Разрешите микрофон в браузере.');
+        } else if (code === 'no-speech') {
+          setHint('Речь не услышана. Нажмите на микрофон и повторите.');
+        } else {
+          setHint('Не удалось распознать речь. Введите текстом.');
+        }
       };
       rec.onend = () => {
         setListening(false);
+        recRef.current = null;
         if (latest.trim()) runParse(latest);
       };
       setSayText('');
@@ -136,6 +185,7 @@ export default function ExpensesTab({
       setListening(true);
     } catch {
       setListening(false);
+      recRef.current = null;
     }
   };
 
