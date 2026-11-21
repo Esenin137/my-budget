@@ -452,7 +452,7 @@ export function runLocalAdvisor(
   state: AppState,
   periodTx: Transaction[],
   refDate: Date
-): { reply: string; statePatch?: Partial<AppState> } {
+): { matched: boolean; reply: string; sourceLabel?: string; statePatch?: Partial<AppState> } {
   const q = words2num(rawQ).toLowerCase();
   const outTx = periodTx.filter((t) => t.t !== 'in');
   const H = analyzeFinancialHealth(periodTx, refDate);
@@ -477,6 +477,8 @@ export function runLocalAdvisor(
       : [{ id: uid(), name: `Копилка ${rate}% год.`, sum: 0, rate, rule: saveRule.label }];
     const y1 = Math.round(monthlyAdd * 12 * (1 + (rate / 100) * 0.55));
     return {
+      matched: true,
+      sourceLabel: 'Личные финансы · Раздел «Бюджет и Вклады»',
       reply: `Закрепил правило: откладывать ${pct}% от ${fromInc ? 'дохода' : 'остатка'}.\n• К переводу за период: ${formatMoney(monthlyAdd)}\n• При ставке ${rate}% годовых за год накопится ~${formatMoney(y1)}.`,
       statePatch: { saveRule, deposits: nextDeposits },
     };
@@ -493,6 +495,8 @@ export function runLocalAdvisor(
       : [{ id: uid(), name: `Копилка ${rVal}% год.`, sum: 0, rate: rVal, rule: saveRule.label }];
     const yr1 = Math.round(fix * 12 * (1 + (rVal / 100) * 0.55));
     return {
+      matched: true,
+      sourceLabel: 'Личные финансы · Раздел «Бюджет и Вклады»',
       reply: `Закреплено: пополнять вклад на ${formatMoney(fix)}/мес.\n• За год под ~${rVal}% накопится ~${formatMoney(yr1)}.`,
       statePatch: { saveRule, deposits: nextDeposits },
     };
@@ -521,6 +525,8 @@ export function runLocalAdvisor(
       createdAt: Date.now(),
     };
     return {
+      matched: true,
+      sourceLabel: 'Личный трекер «Привычки и забота»',
       reply: `✅ Отлично! Добавил привычку «${nextHabit.icon} ${nextHabit.title}» в ваш трекер «Привычки и забота» ниже. Будем отмечать прогресс каждый день!`,
       statePatch: {
         habits: [...(state.habits || []), nextHabit],
@@ -529,14 +535,14 @@ export function runLocalAdvisor(
   }
 
   if (/вычет|13%|налог|ндфл|вернут|логопед|лечен/.test(q)) {
-    const lines = ['Как вернуть деньги налоговым вычетом 13%:'];
+    const lines = ['Как вернуть деньги налоговым вычетом 13% по вашим записям:'];
     if (H.taxEdu > 0 || H.taxMed > 0) {
       lines.push(
-        `• Найдено трат на обучение и медицину: ${formatMoney(H.taxEdu + H.taxMed)} — можно вернуть +${formatMoney(H.socialRefund)}.`
+        `• Найдено трат на обучение и медицину: ${formatMoney(H.taxEdu + H.taxMed)} — ориентировочный возврат +${formatMoney(H.socialRefund)}.`
       );
     } else {
       lines.push(
-        '• За платные медуслуги, анализы, стоматолога и обучение детей государство возвращает 13%.'
+        '• За период пока не найдено отмеченных трат на платную медицину или обучение (13% возвращаются по чекам и справкам об оплате).'
       );
     }
     if (H.taxMort > 0) {
@@ -545,7 +551,11 @@ export function runLocalAdvisor(
       );
     }
     lines.push('Совет: прикрепляйте фото чеков прямо в разделе «Расходы», чтобы всё было под рукой при подаче декларации в ФНС.');
-    return { reply: lines.join('\n') };
+    return {
+      matched: true,
+      sourceLabel: 'Личные финансы · Расчёт вычета 13% НДФЛ',
+      reply: lines.join('\n'),
+    };
   }
 
   if (/минус|долг|кредит|ипотек|выбрат|не хватает|экономи|сократ/.test(q)) {
@@ -562,7 +572,11 @@ export function runLocalAdvisor(
     } else {
       lines.push(`3. Безопасный темп до конца месяца: до ${formatMoney(H.safeDaily)} в день.`);
     }
-    return { reply: lines.join('\n') };
+    return {
+      matched: true,
+      sourceLabel: 'Личные финансы · Анализ бюджета и обязательств',
+      reply: lines.join('\n'),
+    };
   }
 
   if (/подушк|резерв|заначк|чёрный день|черный день|безопасн/.test(q)) {
@@ -573,28 +587,64 @@ export function runLocalAdvisor(
       state.deposits.reduce((a, d) => a + (d.sum || 0), 0) + (state.family.totalSavings || 0);
     const pctReady = minPad > 0 ? Math.min(100, Math.round((curSaved / minPad) * 100)) : 0;
     return {
+      matched: true,
+      sourceLabel: 'Личные финансы · Вклады и семейные накопления',
       reply: `Расчёт подушки безопасности:\n• Базовые расходы в месяц: ${formatMoney(baseMonth)}\n• Минимум на 3 месяца: ${formatMoney(minPad)} (собрано ${formatMoney(curSaved)} — ${pctReady}%)\n• Комфорт на 6 месяцев: ${formatMoney(optPad)}\nДержите резерв на накопительном счёте с ежедневным остатком или в фондах ликвидности.`,
     };
   }
 
-  if (/выгодн|иис|офз|sbmm|lqdt|фонд|акци|инвест|сравн/.test(q)) {
+  if (/выгодн|вклад\s*vs|sbmm|lqdt|иис|офз/.test(q) && !/лимит\S*\s+иис|закон|правил\S*\s+иис|новы\S*\s+иис|иис-?3/.test(q)) {
     const investBase = H.left > 0 ? H.left : 5000;
     const dep1Y = Math.round(investBase * 1.17);
     const iis1Y = Math.round(investBase * 1.16 + investBase * 0.13);
     return {
+      matched: true,
+      sourceLabel: 'Личные финансы · Калькулятор Вклад / ИИС / ОФЗ',
       reply: `Сравнение на сумме ${formatMoney(investBase)}:\n1. Накопительный счёт / фонд ликвидности (~16–17%): через год ~${formatMoney(dep1Y)}, доступ в любой день.\n2. ОФЗ на ИИС (~16% + вычет 13% НДФЛ): в первый год отдача до ~${formatMoney(iis1Y)}.\nПравило: сначала подушка на 3 месяца на вкладе, затем регулярные пополнения ИИС.`,
     };
   }
 
-  if (/разбор|анализ|совет|помог|бюджет|поднят|лимит/.test(q)) {
+  if (/мои вклад|вклады|депозит|копилк|накоплени|сбережени/.test(q)) {
+    const depTotal = state.deposits.reduce((sum, d) => sum + (d.sum || 0), 0);
+    const famSaved = state.family.totalSavings || 0;
+    const lines = ['Ваши вклады и сбережения:'];
+    if (state.deposits.length > 0) {
+      state.deposits.forEach((d) => {
+        lines.push(`• ${d.name}: ${formatMoney(d.sum)} под ${d.rate}%${d.rule ? ` (${d.rule})` : ''}`);
+      });
+    } else {
+      lines.push('• В разделе «Бюджет → Вклады» пока нет добавленных вкладов.');
+    }
+    if (famSaved > 0) {
+      lines.push(`• Семейные накопления («Семья»): ${formatMoney(famSaved)}`);
+    }
+    lines.push(`• Итого сбережений: ${formatMoney(depTotal + famSaved)}`);
     return {
+      matched: true,
+      sourceLabel: 'Личные финансы · Раздел «Вклады и сбережения»',
+      reply: lines.join('\n'),
+    };
+  }
+
+  if (/разбор|анализ|бюджет|доход|зарплат|лимит/.test(q)) {
+    return {
+      matched: true,
+      sourceLabel: 'Личные финансы · Раздел «Бюджет и Расходы»',
       reply: `Разбор бюджета за выбранный период:\n• Доходы: ${formatMoney(H.sumIn)} · Расходы: ${formatMoney(H.sumOut)}\n• Обязательные платежи: ${formatMoney(H.fixedSum)}\n• Гибкие покупки: ${formatMoney(H.flexSum)}\n• Безопасный лимит: ${formatMoney(H.safeDaily)}/день (осталось дней: ${H.remDays})${H.socialRefund > 0 ? `\n• Возможный вычет 13% НДФЛ: +${formatMoney(H.socialRefund)}` : ''}`,
     };
   }
 
-  if (/осталось|остаток/.test(q)) {
-    if (!H.sumIn) return { reply: 'Сначала внесите доходы во вкладке «Бюджет».' };
+  if (/осталось|остаток|свободн/.test(q)) {
+    if (!H.sumIn) {
+      return {
+        matched: true,
+        sourceLabel: 'Личные финансы · Раздел «Бюджет»',
+        reply: 'Сначала внесите доходы во вкладке «Бюджет», чтобы рассчитать свободный остаток.',
+      };
+    }
     return {
+      matched: true,
+      sourceLabel: 'Личные финансы · Раздел «Бюджет»',
       reply:
         H.left >= 0
           ? `Свободный остаток: ${formatMoney(H.left)} (безопасно тратить до ${formatMoney(H.safeDaily)} в день).`
@@ -602,52 +652,67 @@ export function runLocalAdvisor(
     };
   }
 
-  if (!outTx.length) return { reply: 'Трат за выбранный период пока нет.' };
-
-  if (/больше всего|самая большая|топ/.test(q)) {
+  if (/больше всего|самая большая|топ\s*трат|крупн\S*\s+трат|расход|потратил|траты/.test(q)) {
+    if (!outTx.length) {
+      return {
+        matched: true,
+        sourceLabel: 'Личные финансы · Раздел «Расходы»',
+        reply: 'Трат за выбранный период пока нет.',
+      };
+    }
     const bc: Record<string, number> = {};
     outTx.forEach((t) => (bc[t.c] = (bc[t.c] || 0) + t.a));
     const k = Object.keys(bc).sort((a, b) => bc[b] - bc[a])[0];
     const mx = outTx.slice().sort((a, b) => b.a - a.a)[0];
     return {
-      reply: `Больше всего уходит на «${k}»: ${formatMoney(bc[k])} (${Math.round((bc[k] / H.sumOut) * 100)}%). Самая крупная трата: ${mx.n || mx.c}, ${formatMoney(mx.a)}.`,
+      matched: true,
+      sourceLabel: 'Личные финансы · Раздел «Расходы»',
+      reply: `За выбранный период потрачено ${formatMoney(H.sumOut)} (${outTx.length} записей). Больше всего уходит на «${k}»: ${formatMoney(bc[k])} (${Math.round((bc[k] / H.sumOut) * 100)}%). Самая крупная трата: ${mx.n || mx.c}, ${formatMoney(mx.a)}.`,
     };
   }
 
-  const qw = q.replace(/[.,;!?:«»"]/g, ' ').split(/\s+/).filter(Boolean);
-  const matchedCat = state.cats.find((c) => {
-    const n = c[0].toLowerCase();
-    return qw.some((w) =>
-      n.length <= 3
-        ? w.length <= 4 && w.slice(0, 2) === n.slice(0, 2)
-        : w.startsWith(n.slice(0, Math.max(4, n.length - 2)))
-    );
-  });
-  if (matchedCat) {
-    const cs = outTx.filter((t) => t.c === matchedCat[0]).reduce((a, t) => a + t.a, 0);
-    return { reply: `По категории «${matchedCat[0]}» потрачено: ${formatMoney(cs)}.` };
-  }
-
-  const words = q
-    .replace(/[.,;!?:«»"]/g, ' ')
-    .split(/\s+/)
-    .filter((x) => x.length >= 4 && !STOPQ.test(x));
-  if (words.length) {
-    const st = words.map((x) => x.slice(0, Math.max(4, x.length - 2)));
-    const s2 = outTx.filter((t) => {
-      const h = `${t.n || ''} ${t.c}`.toLowerCase();
-      return st.some((z) => h.includes(z));
+  if (outTx.length > 0) {
+    const qw = q.replace(/[.,;!?:«»"]/g, ' ').split(/\s+/).filter(Boolean);
+    const matchedCat = state.cats.find((c) => {
+      const n = c[0].toLowerCase();
+      return qw.some((w) =>
+        n.length <= 3
+          ? w.length <= 4 && w.slice(0, 2) === n.slice(0, 2)
+          : w.startsWith(n.slice(0, Math.max(4, n.length - 2)))
+      );
     });
-    if (s2.length) {
+    if (matchedCat) {
+      const cs = outTx.filter((t) => t.c === matchedCat[0]).reduce((a, t) => a + t.a, 0);
       return {
-        reply: `Найдено по запросу «${words.join(' ')}»: ${formatMoney(s2.reduce((a, t) => a + t.a, 0))} (${s2.length} записей).`,
+        matched: true,
+        sourceLabel: `Личные финансы · Категория «${matchedCat[0]}»`,
+        reply: `По категории «${matchedCat[0]}» за выбранный период потрачено: ${formatMoney(cs)}.`,
       };
+    }
+
+    const words = q
+      .replace(/[.,;!?:«»"]/g, ' ')
+      .split(/\s+/)
+      .filter((x) => x.length >= 4 && !STOPQ.test(x));
+    if (words.length) {
+      const st = words.map((x) => x.slice(0, Math.max(4, x.length - 2)));
+      const s2 = outTx.filter((t) => {
+        const h = `${t.n || ''} ${t.c}`.toLowerCase();
+        return st.some((z) => h.includes(z));
+      });
+      if (s2.length) {
+        return {
+          matched: true,
+          sourceLabel: 'Личные финансы · Поиск по вашим тратам',
+          reply: `Найдено по вашим тратам («${words.join(' ')}»): ${formatMoney(s2.reduce((a, t) => a + t.a, 0))} (${s2.length} записей).`,
+        };
+      }
     }
   }
 
   return {
-    reply:
-      'Выберите быстрый разбор выше (Полный разбор, Возврат 13% НДФЛ, Подушка безопасности, Вклад vs ИИС) или спросите про конкретную категорию, сумму или привычку.',
+    matched: false,
+    reply: '',
   };
 }
 

@@ -236,7 +236,12 @@ export default function App() {
         setLockedPkg(pkg);
         setPinOverlayMode('unlock');
       } else if (pkg) {
-        setState(hydrateState(pkg));
+        const hydrated = hydrateState(pkg);
+        // Always start in reliable 0 MB Offline Advisor mode on fresh launch
+        setState({
+          ...hydrated,
+          uiSettings: { ...hydrated.uiSettings, aiMode: 'offline' },
+        });
         setStorageReady(true);
       } else {
         setStorageReady(true);
@@ -569,7 +574,11 @@ export default function App() {
           const dec = await decryptPayload<AppState>(lockedPkg, nextCode);
           setActivePin(nextCode);
           setLockedPkg(null);
-          setState(hydrateState(dec));
+          const hydrated = hydrateState(dec);
+          setState({
+            ...hydrated,
+            uiSettings: { ...hydrated.uiSettings, aiMode: 'offline' },
+          });
           setStorageReady(true);
           setPinOverlayMode(null);
         } catch {
@@ -1396,12 +1405,16 @@ export default function App() {
       {settingsModalTab && (
         <AppSettingsModal
           settings={state.uiSettings}
+          knowledgeBase={state.knowledgeBase}
           initialTab={settingsModalTab}
           activePin={activePin}
           fontLabel={fontLabel}
           onOpenPin={() => (activePin ? setShowPinManageModal(true) : setPinOverlayMode('set1'))}
           onCycleFont={handleCycleFont}
           onChange={(nextSettings) => commitState((prev) => ({ ...prev, uiSettings: nextSettings }))}
+          onChangeKnowledgeBase={(nextKb) =>
+            commitState((prev) => ({ ...prev, knowledgeBase: nextKb }))
+          }
           onClose={() => setSettingsModalTab(null)}
           onShowToast={showToast}
         />

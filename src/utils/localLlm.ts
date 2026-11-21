@@ -80,7 +80,7 @@ function isMobileClient(): boolean {
 
 function isGpuContextLostError(err: unknown): boolean {
   const raw = err instanceof Error ? err.message : String(err || '');
-  return /mapasync|gpubuffer|instance reference|already been disposed|device.*lost|out of memory|oom|allocation failed|webgpu|vk_|context lost/i.test(
+  return /mapasync|gpubuffer|instance reference|already been disposed|disposed|tokenizer|devicelost|device.*lost|out of memory|oom|allocation failed|webgpu|vk_|context lost/i.test(
     raw
   );
 }
@@ -301,83 +301,71 @@ async function runCompletion(
   const systemPrompt =
     'Ты — персональный финансовый советник в приложении «Мои финансы» (Россия, рубли ₽). ' +
     'Отвечай на русском языке кратко, практично и понятно (3–5 предложений, без таблиц). ' +
-    'Используй реальные цифры пользователя:\n' +
+    'Не выдумывай факты и законы, которых нет в переданных данных. ' +
+    'Используй реальные цифры пользователя и найденные фрагменты базы знаний:\n' +
     financialSnapshot;
 
   const trimmedHistory = history.slice(mobile ? -2 : -4);
-  const completion = await engine.chat.completions.create({
-    messages: [
-      { role: 'system', content: systemPrompt },
-      ...trimmedHistory,
-      { role: 'user', content: question },
-    ],
-    temperature: 0.4,
-    max_tokens: mobile ? 240 : 320,
-  });
+  try {
+    const completion = await engine.chat.completions.create({
+      messages: [
+        { role: 'system', content: systemPrompt },
+        ...trimmedHistory,
+        { role: 'user', content: question },
+      ],
+      temperature: 0.35,
+      max_tokens: mobile ? 240 : 320,
+    });
 
-  const reply = (completion.choices[0]?.message?.content || '').trim();
-  if (!reply) {
-    throw new Error('Локальная модель не вернула ответ. Попробуйте переформулировать вопрос.');
+    const reply = (completion.choices[0]?.message?.content || '').trim();
+    if (!reply) {
+      throw new Error('Empty local LLM response');
+    }
+    return reply;
+  } catch (err: unknown) {
+    throw err instanceof Error ? err : new Error(String(err || 'WebLLM completion failed'));
   }
-  return reply;
 }
 
+/**
+ * Runs local WebLLM inference safely.
+ * On ANY WebGPU / VRAM / Tokenizer / disposed / browser error:
+ * - silently calls engine.unload() inside try/catch, resets engine = null,
+ * - clears any technical red error state,
+ * - returns null so the caller immediately serves the built-in «Офлайн-Советник (0 МБ)».
+ */
 export async function askLocalLlm(
   question: string,
   financialSnapshot: string,
   history: { role: 'user' | 'assistant'; content: string }[]
-): Promise<string> {
+): Promise<string | null> {
   const activeModelId = currentState.modelId;
   if (!engineInstance || currentState.status !== 'ready' || !activeModelId) {
-    throw new Error('Локальная модель ещё не загружена. Нажмите «Загрузить модель» в настройках или в чате.');
+    return null;
   }
 
   try {
     return await runCompletion(engineInstance, question, financialSnapshot, history);
   } catch (err: unknown) {
-    // Mobile Chrome WebGPU frequently drops GPUDevice on OOM, f16 driver bugs (Adreno 660),
-    // or voice/background transitions. Terminate the dead worker and try one clean compact-VRAM recovery.
-    if (isGpuContextLostError(err)) {
-      await disposeEngineAndWorker();
-      emit({
-        status: 'idle',
-        modelId: null,
-        progress: 0,
-        statusText: 'Перезапуск WebGPU в экономном режиме...',
-        error: null,
-      });
+    // Always safely unload and reset engineInstance = null on GPU/Tokenizer/VRAM or unexpected errors
+    const isMemoryOrGpuErr =
+      isGpuContextLostError(err) ||
+      /tokenizer|devicelost|device.?lost|deleted|disposed|gpubuffer|mapasync|abort|memory/i.test(
+        err instanceof Error ? err.message : String(err || '')
+      );
 
-      const recovered = await loadLocalModel(activeModelId, {
-        contextWindowSize: 768,
-        forceReload: true,
-      });
+    await disposeEngineAndWorker();
+    emit({
+      status: 'idle',
+      modelId: null,
+      progress: 0,
+      statusText: isMemoryOrGpuErr
+        ? 'Движок WebGPU сброшен — активен Офлайн-Советник'
+        : 'Модель выгружена — активен Офлайн-Советник',
+      error: null,
+    });
 
-      if (recovered && engineInstance) {
-        try {
-          return await runCompletion(engineInstance, question, financialSnapshot, []);
-        } catch (retryErr: unknown) {
-          await disposeEngineAndWorker();
-          if (!isGpuContextLostError(retryErr)) {
-            throw retryErr;
-          }
-        }
-      }
-
-      const isF16Model = activeModelId.includes('q4f16');
-      const friendlyErr = isF16Model
-        ? 'Драйвер WebGPU (часто на Snapdragon / Adreno) сбросил модель формата f16. Откройте Настройки → ИИ и выберите совместимый вариант «Qwen 2.5 · 1.5B (Adreno / f32)» или «Qwen 2.5 · 0.5B (Adreno / f32)» — они работают без f16-шейдеров.'
-        : 'Браузер сбросил видеопамять WebGPU. Попробуйте более лёгкую «Qwen 2.5 · 0.5B (Adreno / f32)» в Настройках → ИИ или используйте «Офлайн-Советник (0 МБ)».';
-
-      emit({
-        status: 'error',
-        modelId: null,
-        progress: 0,
-        statusText: 'Сброс видеопамяти WebGPU',
-        error: friendlyErr,
-      });
-      throw new Error(friendlyErr);
-    }
-
-    throw err;
+    // Silent fallback: never surface red technical GPU errors to the user
+    return null;
   }
 }

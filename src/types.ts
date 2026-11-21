@@ -136,6 +136,30 @@ export interface UiSettings {
   localModelId: string;
 }
 
+export interface KnowledgeRule {
+  id: number;
+  title: string;
+  content: string;
+  sourceType: 'manual' | 'file';
+  fileName?: string;
+  createdAt: number;
+}
+
+export interface KnowledgeSource {
+  id: string;
+  name: string;
+  url: string;
+  kind: 'moex' | 'rss' | 'json' | 'text';
+  enabled: boolean;
+  isDefault?: boolean;
+}
+
+export interface KnowledgeBaseState {
+  rules: KnowledgeRule[];
+  sources: KnowledgeSource[];
+  onlineSearchEnabled: boolean;
+}
+
 export interface AppState {
   tx: Transaction[];
   budget: number;
@@ -150,6 +174,7 @@ export interface AppState {
   activeNoteTabId: string;
   habits: HabitItem[];
   uiSettings: UiSettings;
+  knowledgeBase: KnowledgeBaseState;
 }
 
 export interface EncryptedPackage {

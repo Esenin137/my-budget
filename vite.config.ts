@@ -5,9 +5,11 @@ import path from 'path';
 import {defineConfig} from 'vite';
 import {VitePWA} from 'vite-plugin-pwa';
 
-export default defineConfig(() => {
-  const rawBase = process.env.VITE_BASE_PATH || '/';
-  const basePath = rawBase.endsWith('/') ? rawBase : `${rawBase}/`;
+export default defineConfig(({command}) => {
+  const rawBase = process.env.VITE_BASE_PATH || (command === 'build' ? './' : '/');
+  const isRelativeBase = rawBase === './' || rawBase === '.';
+  const basePath = isRelativeBase ? './' : rawBase.endsWith('/') ? rawBase : `${rawBase}/`;
+  const assetPrefix = isRelativeBase ? '' : basePath;
 
   return {
     base: basePath,
@@ -37,19 +39,19 @@ export default defineConfig(() => {
           scope: basePath,
           icons: [
             {
-              src: `${basePath}pwa-192x192.png`,
+              src: `${assetPrefix}pwa-192x192.png`,
               sizes: '192x192',
               type: 'image/png',
               purpose: 'any',
             },
             {
-              src: `${basePath}pwa-512x512.png`,
+              src: `${assetPrefix}pwa-512x512.png`,
               sizes: '512x512',
               type: 'image/png',
               purpose: 'any',
             },
             {
-              src: `${basePath}pwa-maskable-512x512.png`,
+              src: `${assetPrefix}pwa-maskable-512x512.png`,
               sizes: '512x512',
               type: 'image/png',
               purpose: 'maskable',
@@ -65,7 +67,7 @@ export default defineConfig(() => {
               manifest: entries.filter((entry) => !entry.size || entry.size < 2 * 1024 * 1024),
             }),
           ],
-          navigateFallback: `${basePath}index.html`,
+          navigateFallback: `${assetPrefix}index.html`,
           navigateFallbackDenylist: [/^\/api\//],
           runtimeCaching: [
             {

@@ -32,6 +32,14 @@ import {
   LocalLlmState,
   subscribeLocalLlm,
 } from '../utils/localLlm';
+import {
+  HONEST_UNKNOWN_REPLY,
+  KnowledgeSearchHit,
+  loadOnlineCacheMap,
+  searchKnowledgeRules,
+  searchOnlineCache,
+  syncEnabledOnlineSources,
+} from '../utils/knowledgeBase';
 import GlassSection from './GlassSection';
 
 interface AdvisorTabProps {
@@ -203,41 +211,115 @@ export default function AdvisorTab({
     ].join('\n');
   };
 
+  const composeStructuredOfflineAnswer = (
+    localCheck: ReturnType<typeof runLocalAdvisor>,
+    kbHits: KnowledgeSearchHit[],
+    onlineHits: KnowledgeSearchHit[]
+  ): { text: string; hasMatch: boolean; kbContextForLlm: string } => {
+    const blocks: string[] = [];
+    const llmContextLines: string[] = [];
+
+    if (localCheck.matched && localCheck.reply) {
+      const src = localCheck.sourceLabel ? `\n📌 Источник: ${localCheck.sourceLabel}` : '';
+      blocks.push(`${localCheck.reply}${src}`);
+      llmContextLines.push(`[Личные данные] ${localCheck.reply}`);
+    }
+
+    if (kbHits.length > 0) {
+      const kbFormatted = kbHits
+        .map((h) => `• ${h.title}: ${h.snippet}\n📌 Источник: ${h.sourceLabel}`)
+        .join('\n\n');
+      blocks.push(`📚 Из вашей Базы знаний:\n${kbFormatted}`);
+      kbHits.forEach((h) => llmContextLines.push(`[База знаний: ${h.title}] ${h.snippet}`));
+    }
+
+    if (onlineHits.length > 0) {
+      const onFormatted = onlineHits
+        .map(
+          (h) =>
+            `• ${h.snippet}${h.updatedAt ? ` (${h.updatedAt})` : ''}\n📌 Источник: ${h.sourceLabel}`
+        )
+        .join('\n\n');
+      blocks.push(`🌐 Из кэша онлайн-источников:\n${onFormatted}`);
+      onlineHits.forEach((h) => llmContextLines.push(`[${h.sourceLabel}] ${h.snippet}`));
+    }
+
+    if (blocks.length === 0) {
+      return {
+        text: HONEST_UNKNOWN_REPLY,
+        hasMatch: false,
+        kbContextForLlm: '',
+      };
+    }
+
+    return {
+      text: blocks.join('\n\n'),
+      hasMatch: true,
+      kbContextForLlm: llmContextLines.join('\n'),
+    };
+  };
+
   const askQuestion = async (rawQ: string, viaVoice = false) => {
     const q = rawQ.trim();
     if (!q || busyStage !== 'idle') return;
     setInput('');
     setVoiceError(null);
 
+    const userMsg: ChatMessage = { id: uid(), isUser: true, html: q, viaVoice };
+    setMessages((prev) => [...prev, userMsg]);
+
+    // Step 1: Personal financial data (budget, expenses, deposits, tax 13%, cushion, IIS/OFZ)
     const localCheck = runLocalAdvisor(q, state, periodTx, curDate);
     if (localCheck.statePatch) {
       onApplyAdvisorPatch(localCheck.statePatch);
     }
 
-    const userMsg: ChatMessage = { id: uid(), isUser: true, html: q, viaVoice };
+    // Step 2: User's personal Knowledge Base (saved rules & .txt/.md excerpts in IndexedDB)
+    const kb = state.knowledgeBase;
+    const kbHits = searchKnowledgeRules(q, kb?.rules || [], 3);
 
-    // 1) OFFLINE MODE (0 MB, instant local calculator)
+    // Step 3: Local search in cached public online sources (ONLY if user explicitly enabled the toggle;
+    // zero user query text or financial data is ever sent to any external server)
+    let onlineHits: KnowledgeSearchHit[] = [];
+    if (kb?.onlineSearchEnabled && Array.isArray(kb.sources) && kb.sources.some((s) => s.enabled)) {
+      setBusyStage('thinking');
+      try {
+        const existingCache = await loadOnlineCacheMap();
+        const hasAnyEntries = kb.sources.some(
+          (s) => s.enabled && (existingCache[s.id]?.entries?.length || 0) > 0
+        );
+        const cacheToSearch = hasAnyEntries
+          ? existingCache
+          : await syncEnabledOnlineSources(kb.sources);
+        onlineHits = searchOnlineCache(q, kb.sources, cacheToSearch, 3);
+      } catch {
+        // Stay resilient offline if cache/network fails
+      } finally {
+        if (uiSettings.aiMode === 'offline') setBusyStage('idle');
+      }
+    }
+
+    const structured = composeStructuredOfflineAnswer(localCheck, kbHits, onlineHits);
+
+    // 1) OFFLINE MODE (0 MB, default mode on startup — instant, honest, 100% private)
     if (uiSettings.aiMode === 'offline') {
+      setBusyStage('idle');
       setMessages((prev) => [
         ...prev,
-        userMsg,
-        { id: uid() + 1, isUser: false, html: localCheck.reply },
+        { id: uid() + 1, isUser: false, html: structured.text },
       ]);
       return;
     }
 
-    // 2) LOCAL ON-DEVICE LLM (WebLLM, 100% offline in browser)
+    // 2) LOCAL ON-DEVICE LLM (WebLLM with silent fallback to Offline Advisor on any WebGPU/VRAM error)
     if (uiSettings.aiMode === 'local-llm') {
-      setMessages((prev) => [...prev, userMsg]);
+      // If local model isn't loaded or there are zero matching facts and user asked a pure unknown,
+      // avoid hallucinating or throwing red technical errors
       if (llmState.status !== 'ready') {
+        setBusyStage('idle');
         setMessages((prev) => [
           ...prev,
-          {
-            id: uid() + 1,
-            isUser: false,
-            html: '📱 Локальная нейросеть ещё не загружена в память телефона. Нажмите кнопку «Загрузить модель» выше в этой карточке (или в Настройках приложения → ИИ и Приватность).',
-            isError: true,
-          },
+          { id: uid() + 1, isUser: false, html: structured.text },
         ]);
         return;
       }
@@ -251,26 +333,45 @@ export default function AdvisorTab({
             role: (m.isUser ? 'user' : 'assistant') as 'user' | 'assistant',
             content: m.html,
           }));
-        const reply = await askLocalLlm(q, buildTextSnapshot(), localHistory);
+        const enrichedSnapshot = structured.kbContextForLlm
+          ? `${buildTextSnapshot()}\n\nРелевантные данные:\n${structured.kbContextForLlm}`
+          : buildTextSnapshot();
+
+        const reply = await askLocalLlm(q, enrichedSnapshot, localHistory);
+
+        // Silent fallback: if WebGPU / VRAM / Tokenizer / disposed error occurred,
+        // localLlm already unloaded & reset engine = null; serve Offline Advisor seamlessly with NO red error!
+        if (!reply) {
+          setMessages((prev) => [
+            ...prev,
+            { id: uid() + 1, isUser: false, html: structured.text },
+          ]);
+          return;
+        }
+
         const patchNote = localCheck.statePatch?.habits
           ? '\n\n✅ Новая привычка добавлена в трекер «Привычки и забота» ниже!'
           : localCheck.statePatch?.saveRule
           ? '\n\n✅ Автоправило накопления сохранено в разделе «Бюджет».'
           : '';
+        const sourceFooter =
+          kbHits.length > 0
+            ? `\n\n📌 Источник: ${kbHits[0].sourceLabel}`
+            : onlineHits.length > 0
+            ? `\n\n📌 Источник: ${onlineHits[0].sourceLabel}`
+            : localCheck.sourceLabel
+            ? `\n\n📌 Источник: ${localCheck.sourceLabel}`
+            : '';
+
         setMessages((prev) => [
           ...prev,
-          { id: uid() + 1, isUser: false, html: `${reply}${patchNote}` },
+          { id: uid() + 1, isUser: false, html: `${reply}${patchNote}${sourceFooter}` },
         ]);
-      } catch (err: unknown) {
-        const msg = err instanceof Error ? err.message : 'Ошибка локальной нейросети.';
+      } catch {
+        // Guaranteed silent fallback to Offline Advisor — never show red technical GPU errors
         setMessages((prev) => [
           ...prev,
-          { id: uid() + 1, isUser: false, html: `⚠️ ${msg}`, isError: true },
-          {
-            id: uid() + 2,
-            isUser: false,
-            html: `${localCheck.reply}\n\nℹ️ Пока нейросеть недоступна, ответ рассчитал встроенный офлайн-советник.`,
-          },
+          { id: uid() + 1, isUser: false, html: structured.text },
         ]);
       } finally {
         setBusyStage('idle');
@@ -278,13 +379,12 @@ export default function AdvisorTab({
       return;
     }
 
-    // 3) CLOUD AI MODE (Server-side Gemini)
+    // 3) CLOUD AI MODE (Server-side Gemini; falls back silently to Offline Advisor on static hosts)
     const historyForApi = messages
       .filter((m) => !m.isError)
       .slice(-6)
       .map((m) => ({ role: (m.isUser ? 'user' : 'model') as 'user' | 'model', text: m.html }));
 
-    setMessages((prev) => [...prev, userMsg]);
     setBusyStage('thinking');
 
     try {
@@ -302,19 +402,23 @@ export default function AdvisorTab({
       try {
         data = JSON.parse(rawText) as { reply?: string; error?: string };
       } catch {
-        // Static hosting without Node.js backend returns HTML 404 — fall back to offline advisor seamlessly
+        // Static hosting without Node.js backend — seamlessly serve Offline Advisor + Knowledge Base
         setMessages((prev) => [
           ...prev,
           {
             id: uid() + 1,
             isUser: false,
-            html: `${localCheck.reply}\n\nℹ️ Облачный сервер ИИ недоступен на этом хостинге — ответ рассчитан встроенным офлайн-советником.`,
+            html: structured.text,
           },
         ]);
         return;
       }
       if (!resp.ok || !data.reply) {
-        throw new Error(data.error || 'Не удалось получить ответ от ИИ-Советника.');
+        setMessages((prev) => [
+          ...prev,
+          { id: uid() + 1, isUser: false, html: structured.text },
+        ]);
+        return;
       }
 
       const patchNote = localCheck.statePatch?.habits
@@ -327,14 +431,13 @@ export default function AdvisorTab({
         ...prev,
         { id: uid() + 1, isUser: false, html: `${data.reply}${patchNote}` },
       ]);
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : 'Ошибка связи с ИИ-Советником.';
+    } catch {
       setMessages((prev) => [
         ...prev,
         {
           id: uid() + 1,
           isUser: false,
-          html: `${localCheck.reply}\n\n⚠️ ${msg}`,
+          html: structured.text,
         },
       ]);
     } finally {
@@ -673,7 +776,11 @@ export default function AdvisorTab({
               <div className="font-extrabold text-sm text-white">Персональный ИИ-Советник</div>
               <div className="fin-sub">
                 {uiSettings.aiMode === 'offline'
-                  ? 'Локальные расчёты · 0 МБ · без выхода в интернет'
+                  ? `Офлайн-Советник (0 МБ)${
+                      state.knowledgeBase?.rules?.length
+                        ? ` · База знаний: ${state.knowledgeBase.rules.length}`
+                        : ''
+                    }${state.knowledgeBase?.onlineSearchEnabled ? ' · Онлайн-кэш вкл.' : ''}`
                   : uiSettings.aiMode === 'local-llm'
                   ? `Нейросеть на устройстве: ${selectedModelMeta.name}`
                   : 'Спросите голосом или текстом по вашим финансам'}
@@ -737,7 +844,7 @@ export default function AdvisorTab({
               ) : (
                 <div className="flex items-center justify-between gap-2 flex-wrap">
                   <div className="text-xs text-cyan-100">
-                    <b>{selectedModelMeta.name}</b> ({selectedModelMeta.sizeLabel}) — загрузите 1 раз для работы офлайн.
+                    <b>{selectedModelMeta.name}</b> ({selectedModelMeta.sizeLabel}) — загрузите 1 раз для работы офлайн. Пока модель не загружена, отвечает встроенный Офлайн-Советник.
                   </div>
                   <button
                     type="button"
@@ -750,7 +857,7 @@ export default function AdvisorTab({
                   </button>
                 </div>
               )}
-              {llmState.error && <div className="text-[11px] text-rose-300">{llmState.error}</div>}
+              {llmState.error && <div className="text-[11px] text-amber-200">{llmState.error}</div>}
             </div>
           )}
 

@@ -1,20 +1,34 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
   AlertTriangle,
+  BookOpen,
   Bot,
   Cloud,
   Cpu,
   Download,
+  FileText,
+  Globe,
   HardDrive,
   LayoutGrid,
   Loader2,
   Lock,
   Palette,
+  Plus,
+  RefreshCw,
   RotateCcw,
   ShieldCheck,
   Trash2,
+  Upload,
 } from 'lucide-react';
-import { AiMode, TabId, ThemeStyle, UiSettings } from '../types';
+import {
+  AiMode,
+  KnowledgeBaseState,
+  KnowledgeRule,
+  KnowledgeSource,
+  TabId,
+  ThemeStyle,
+  UiSettings,
+} from '../types';
 import { createDefaultUiSettings } from '../utils/storage';
 import {
   deleteLocalModelCache,
@@ -26,17 +40,27 @@ import {
   subscribeLocalLlm,
   unloadLocalModel,
 } from '../utils/localLlm';
+import {
+  loadOnlineCacheMap,
+  MAX_RULE_FILE_BYTES,
+  OnlineCacheMap,
+  syncEnabledOnlineSources,
+  validateSafeSourceUrl,
+} from '../utils/knowledgeBase';
+import { uid } from '../utils/finance';
 import { ModalShell } from './Modals';
 import { PWAInstallButton } from './PWAInstallButton';
 
 interface AppSettingsModalProps {
   settings: UiSettings;
+  knowledgeBase: KnowledgeBaseState;
   initialTab?: 'layout' | 'ai';
   activePin?: string | null;
   fontLabel?: string;
   onOpenPin?: () => void;
   onCycleFont?: () => void;
   onChange: (next: UiSettings) => void;
+  onChangeKnowledgeBase: (next: KnowledgeBaseState) => void;
   onClose: () => void;
   onShowToast: (msg: string) => void;
 }
@@ -142,12 +166,14 @@ function ToggleSwitch({
 
 export default function AppSettingsModal({
   settings,
+  knowledgeBase,
   initialTab = 'layout',
   activePin,
   fontLabel = 'А+',
   onOpenPin,
   onCycleFont,
   onChange,
+  onChangeKnowledgeBase,
   onClose,
   onShowToast,
 }: AppSettingsModalProps) {
@@ -155,9 +181,27 @@ export default function AppSettingsModal({
   const [llmState, setLlmState] = useState<LocalLlmState>(() => getLocalLlmState());
   const webGpuOk = isWebGpuSupported();
 
+  // Knowledge Base form state
+  const [ruleTitle, setRuleTitle] = useState('');
+  const [ruleText, setRuleText] = useState('');
+  const [newSourceName, setNewSourceName] = useState('');
+  const [newSourceUrl, setNewSourceUrl] = useState('');
+  const [sourceUrlError, setSourceUrlError] = useState<string | null>(null);
+  const [onlineCache, setOnlineCache] = useState<OnlineCacheMap>({});
+  const [syncingSources, setSyncingSources] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+
   useEffect(() => {
     return subscribeLocalLlm(setLlmState);
   }, []);
+
+  useEffect(() => {
+    if (innerTab === 'ai') {
+      loadOnlineCacheMap()
+        .then(setOnlineCache)
+        .catch(() => {});
+    }
+  }, [innerTab]);
 
   const visibleTabsCount = Object.values(settings.visibleTabs).filter(Boolean).length;
 
@@ -201,8 +245,27 @@ export default function AppSettingsModal({
     });
   };
 
-  const setAiMode = (mode: AiMode) => {
+  const setAiMode = async (mode: AiMode) => {
+    if (mode !== 'local-llm' && llmState.status === 'ready') {
+      try {
+        await unloadLocalModel();
+      } catch {
+        // ignore unload errors
+      }
+    }
     onChange({ ...settings, aiMode: mode });
+  };
+
+  const handleSelectLocalModel = async (modelId: string) => {
+    if (settings.localModelId === modelId) return;
+    if (llmState.status === 'ready' && llmState.modelId && llmState.modelId !== modelId) {
+      try {
+        await unloadLocalModel();
+      } catch {
+        // ignore unload errors
+      }
+    }
+    onChange({ ...settings, localModelId: modelId });
   };
 
   const handleLoadSelectedModel = async () => {
@@ -215,6 +278,156 @@ export default function AppSettingsModal({
   const handleClearCache = async () => {
     await deleteLocalModelCache(settings.localModelId);
     onShowToast('Кэш локальной модели очищен.');
+  };
+
+  // Knowledge Base handlers
+  const handleAddRule = () => {
+    const content = ruleText.trim();
+    if (!content) {
+      onShowToast('Введите текст правила или выжимки.');
+      return;
+    }
+    const autoTitle =
+      ruleTitle.trim() ||
+      content.split(/\n/)[0].replace(/^#+\s*/, '').trim().slice(0, 60) ||
+      'Правило из базы знаний';
+    const nextRule: KnowledgeRule = {
+      id: uid(),
+      title: autoTitle,
+      content,
+      sourceType: 'manual',
+      createdAt: Date.now(),
+    };
+    onChangeKnowledgeBase({
+      ...knowledgeBase,
+      rules: [nextRule, ...knowledgeBase.rules],
+    });
+    setRuleTitle('');
+    setRuleText('');
+    onShowToast('Правило сохранено в Базу знаний (IndexedDB).');
+  };
+
+  const handleUploadRuleFile = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+    if (!/\.(txt|md)$/i.test(file.name)) {
+      onShowToast('Поддерживаются только текстовые файлы .txt и .md.');
+      return;
+    }
+    if (file.size > MAX_RULE_FILE_BYTES) {
+      onShowToast('Файл слишком большой (максимум 512 КБ). Разделите текст на выжимки.');
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = () => {
+      const text = typeof reader.result === 'string' ? reader.result.trim() : '';
+      if (!text) {
+        onShowToast('Файл пустой.');
+        return;
+      }
+      const cleanName = file.name.replace(/\.(txt|md)$/i, '');
+      const nextRule: KnowledgeRule = {
+        id: uid(),
+        title: cleanName || 'Загруженный документ',
+        content: text,
+        sourceType: 'file',
+        fileName: file.name,
+        createdAt: Date.now(),
+      };
+      onChangeKnowledgeBase({
+        ...knowledgeBase,
+        rules: [nextRule, ...knowledgeBase.rules],
+      });
+      onShowToast(`Файл «${file.name}» добавлен в Базу знаний.`);
+    };
+    reader.readAsText(file, 'utf-8');
+  };
+
+  const handleDeleteRule = (id: number) => {
+    onChangeKnowledgeBase({
+      ...knowledgeBase,
+      rules: knowledgeBase.rules.filter((r) => r.id !== id),
+    });
+    onShowToast('Выжимка удалена из Базы знаний.');
+  };
+
+  const handleToggleOnlineSearch = async (enabled: boolean) => {
+    onChangeKnowledgeBase({
+      ...knowledgeBase,
+      onlineSearchEnabled: enabled,
+    });
+    if (enabled) {
+      setSyncingSources(true);
+      try {
+        const updated = await syncEnabledOnlineSources(knowledgeBase.sources);
+        setOnlineCache(updated);
+        onShowToast('Онлайн-источники включены и загружены в локальный кэш.');
+      } catch {
+        onShowToast('Онлайн-поиск включён. Нажмите «Обновить» при наличии интернета.');
+      } finally {
+        setSyncingSources(false);
+      }
+    } else {
+      onShowToast('Поиск в онлайн-источниках отключён (100% офлайн).');
+    }
+  };
+
+  const handleRefreshOnlineSources = async () => {
+    if (syncingSources) return;
+    setSyncingSources(true);
+    try {
+      const updated = await syncEnabledOnlineSources(knowledgeBase.sources, { force: true });
+      setOnlineCache(updated);
+      const okCount = knowledgeBase.sources.filter(
+        (s) => s.enabled && updated[s.id]?.status === 'ok'
+      ).length;
+      onShowToast(`Обновлено источников: ${okCount} из ${knowledgeBase.sources.filter((s) => s.enabled).length}.`);
+    } catch {
+      onShowToast('Не удалось обновить часть источников.');
+    } finally {
+      setSyncingSources(false);
+    }
+  };
+
+  const handleAddCustomSource = () => {
+    setSourceUrlError(null);
+    const check = validateSafeSourceUrl(newSourceUrl);
+    if (!check.ok) {
+      setSourceUrlError(check.error);
+      return;
+    }
+    const label = newSourceName.trim() || new URL(check.url).hostname;
+    const nextSrc: KnowledgeSource = {
+      id: `src-custom-${uid()}`,
+      name: label,
+      url: check.url,
+      kind: check.inferredKind,
+      enabled: true,
+      isDefault: false,
+    };
+    onChangeKnowledgeBase({
+      ...knowledgeBase,
+      sources: [...knowledgeBase.sources, nextSrc],
+    });
+    setNewSourceName('');
+    setNewSourceUrl('');
+    onShowToast(`Источник «${label}» добавлен.`);
+  };
+
+  const handleToggleSource = (id: string, enabled: boolean) => {
+    onChangeKnowledgeBase({
+      ...knowledgeBase,
+      sources: knowledgeBase.sources.map((s) => (s.id === id ? { ...s, enabled } : s)),
+    });
+  };
+
+  const handleDeleteSource = (id: string) => {
+    onChangeKnowledgeBase({
+      ...knowledgeBase,
+      sources: knowledgeBase.sources.filter((s) => s.id !== id),
+    });
+    onShowToast('Источник удалён.');
   };
 
   const handleResetDefaults = () => {
@@ -592,7 +805,7 @@ export default function AppSettingsModal({
                         <button
                           key={m.id}
                           type="button"
-                          onClick={() => onChange({ ...settings, localModelId: m.id })}
+                          onClick={() => void handleSelectLocalModel(m.id)}
                           className={`w-full text-left p-2.5 rounded-xl border transition cursor-pointer ${
                             selected
                               ? 'bg-white/10 border-cyan-400/60'
@@ -744,11 +957,231 @@ export default function AppSettingsModal({
               )}
             </div>
           </div>
+
+          {/* НОВЫЙ БЛОК: БАЗА ЗНАНИЙ И ИСТОЧНИКИ (ОБУЧЕНИЕ ИИ) */}
+          <div className="rounded-2xl bg-[var(--fld)] border border-emerald-400/30 p-3 space-y-3">
+            <div className="flex items-center justify-between gap-2">
+              <div className="flex items-center gap-2 font-extrabold text-xs text-white">
+                <BookOpen className="w-4 h-4 text-emerald-400 shrink-0" />
+                <span>База знаний ассистента (выжимки и источники)</span>
+              </div>
+              <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 shrink-0">
+                {knowledgeBase.rules.length} правил
+              </span>
+            </div>
+
+            <div className="fin-sub">
+              Добавляйте свои выжимки из законов (например, лимиты вычетов ИИС-3, НДФЛ 13%, правила
+              вкладов) или загрузите файл <b>.txt / .md</b>. Всё хранится локально в IndexedDB.
+            </div>
+
+            {/* а) Добавление правила / выжимки + загрузка .txt / .md */}
+            <div className="space-y-2">
+              <input
+                type="text"
+                value={ruleTitle}
+                onChange={(e) => setRuleTitle(e.target.value)}
+                placeholder="Название правила (например: Лимиты ИИС-3 и НДФЛ 13%)"
+                className="fin-input w-full text-xs"
+              />
+              <textarea
+                rows={3}
+                value={ruleText}
+                onChange={(e) => setRuleText(e.target.value)}
+                placeholder="Вставьте выжимку из закона, лимиты, заметку или справочный текст..."
+                className="fin-input w-full text-xs resize-y"
+              />
+              <div className="flex gap-1.5 flex-wrap">
+                <button
+                  type="button"
+                  onClick={handleAddRule}
+                  className="fin-btn sm flex-1 flex items-center justify-center gap-1.5"
+                >
+                  <Plus className="w-3.5 h-3.5" />
+                  <span>Добавить правило / выжимку</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => fileInputRef.current?.click()}
+                  className="fin-btn ghost sm flex items-center justify-center gap-1.5"
+                >
+                  <Upload className="w-3.5 h-3.5" />
+                  <span>.txt / .md</span>
+                </button>
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  accept=".txt,.md,text/plain,text/markdown"
+                  onChange={handleUploadRuleFile}
+                  className="hidden"
+                />
+              </div>
+            </div>
+
+            {/* Список сохранённых выжимок */}
+            {knowledgeBase.rules.length > 0 && (
+              <div className="space-y-1.5 max-h-48 overflow-y-auto pr-0.5">
+                {knowledgeBase.rules.map((rule) => (
+                  <div
+                    key={rule.id}
+                    className="rounded-xl bg-black/25 border border-white/10 p-2.5 flex items-start justify-between gap-2"
+                  >
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center gap-1.5 text-xs font-bold text-white truncate">
+                        <FileText className="w-3.5 h-3.5 text-emerald-300 shrink-0" />
+                        <span className="truncate">{rule.title}</span>
+                      </div>
+                      <div className="text-[11px] text-slate-300 line-clamp-2 mt-0.5 leading-snug">
+                        {rule.content}
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => handleDeleteRule(rule.id)}
+                      className="p-1.5 rounded-lg text-rose-300 hover:bg-rose-500/15 cursor-pointer shrink-0"
+                      title="Удалить выжимку"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {/* б) Онлайн-ресурсы и тумблер приватности */}
+            <div className="pt-2.5 border-t border-white/10 space-y-2.5">
+              <div className="flex items-center justify-between gap-2">
+                <div className="min-w-0">
+                  <div className="flex items-center gap-1.5 text-xs font-extrabold text-white">
+                    <Globe className="w-3.5 h-3.5 text-cyan-300 shrink-0" />
+                    <span>Разрешить поиск в онлайн-источниках</span>
+                  </div>
+                  <div className="fin-sub">
+                    По умолчанию выключено (100% офлайн). При включении скачиваются только публичные
+                    ленты и котировки.
+                  </div>
+                </div>
+                <ToggleSwitch
+                  checked={knowledgeBase.onlineSearchEnabled}
+                  onChange={(v) => void handleToggleOnlineSearch(v)}
+                  label="Разрешить поиск в онлайн-источниках"
+                />
+              </div>
+
+              <div className="rounded-xl bg-emerald-500/10 border border-emerald-400/25 px-2.5 py-2 text-[11px] text-emerald-100/90 leading-snug flex items-start gap-2">
+                <ShieldCheck className="w-4 h-4 text-emerald-300 shrink-0 mt-0.5" />
+                <span>
+                  <b>Приватность защищена:</b> текст ваших вопросов, суммы, траты и активы{' '}
+                  <b>никогда не отправляются наружу</b>. Приложение только скачивает публичную ленту
+                  в локальный кэш, очищает HTML и ищет совпадения на телефоне.
+                </span>
+              </div>
+
+              {/* Список обновляемых онлайн-источников */}
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-[11px] font-bold text-slate-300">
+                  Публичные источники ({knowledgeBase.sources.filter((s) => s.enabled).length} актив.)
+                </span>
+                <button
+                  type="button"
+                  disabled={syncingSources || !knowledgeBase.onlineSearchEnabled}
+                  onClick={() => void handleRefreshOnlineSources()}
+                  className="px-2.5 py-1 rounded-lg bg-cyan-500/15 border border-cyan-400/35 text-[11px] font-bold text-cyan-200 hover:bg-cyan-500/25 disabled:opacity-45 cursor-pointer flex items-center gap-1 transition"
+                >
+                  <RefreshCw className={`w-3 h-3 ${syncingSources ? 'animate-spin' : ''}`} />
+                  <span>{syncingSources ? 'Обновление...' : 'Обновить кэш'}</span>
+                </button>
+              </div>
+
+              <div className="space-y-1.5">
+                {knowledgeBase.sources.map((src) => {
+                  const rec = onlineCache[src.id];
+                  const entriesCount = rec?.entries?.length || 0;
+                  return (
+                    <div
+                      key={src.id}
+                      className="rounded-xl bg-black/25 border border-white/10 px-2.5 py-2 flex items-start justify-between gap-2"
+                    >
+                      <label className="flex items-start gap-2 min-w-0 flex-1 cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={src.enabled}
+                          onChange={(e) => handleToggleSource(src.id, e.target.checked)}
+                          className="mt-0.5 w-4 h-4 accent-cyan-400 rounded shrink-0 cursor-pointer"
+                        />
+                        <div className="min-w-0">
+                          <div className="text-xs font-bold text-white leading-tight break-words">
+                            {src.name}
+                          </div>
+                          <div className="text-[10px] text-slate-400 truncate mt-0.5">{src.url}</div>
+                          {rec && (
+                            <div
+                              className={`text-[10px] mt-0.5 ${
+                                rec.status === 'ok' ? 'text-emerald-300' : 'text-amber-300'
+                              }`}
+                            >
+                              {rec.status === 'ok'
+                                ? `В кэше: ${entriesCount} записей · ${new Date(rec.fetchedAt).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' })}`
+                                : rec.error || 'Не удалось обновить'}
+                            </div>
+                          )}
+                        </div>
+                      </label>
+                      {!src.isDefault && (
+                        <button
+                          type="button"
+                          onClick={() => handleDeleteSource(src.id)}
+                          className="p-1 rounded-lg text-rose-300 hover:bg-rose-500/15 cursor-pointer shrink-0"
+                          title="Удалить источник"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+
+              {/* Добавление своей ссылки */}
+              <div className="space-y-1.5 pt-1">
+                <input
+                  type="text"
+                  value={newSourceName}
+                  onChange={(e) => setNewSourceName(e.target.value)}
+                  placeholder="Название источника (например: Справка ЦБ или RSS)"
+                  className="fin-input w-full text-xs"
+                />
+                <div className="flex gap-1.5">
+                  <input
+                    type="url"
+                    value={newSourceUrl}
+                    onChange={(e) => {
+                      setNewSourceUrl(e.target.value);
+                      setSourceUrlError(null);
+                    }}
+                    placeholder="https://... (RSS, JSON или публичная страница)"
+                    className="fin-input flex-1 text-xs"
+                  />
+                  <button
+                    type="button"
+                    onClick={handleAddCustomSource}
+                    className="fin-btn ghost sm shrink-0 flex items-center gap-1"
+                  >
+                    <Plus className="w-3.5 h-3.5" />
+                    <span>Добавить</span>
+                  </button>
+                </div>
+                {sourceUrlError && (
+                  <div className="text-[11px] text-rose-300">{sourceUrlError}</div>
+                )}
+              </div>
+            </div>
+          </div>
         </div>
       )}
 
       <div className="mt-4 pt-3 border-t border-[var(--line)] flex items-center justify-between gap-2 text-[11px] text-slate-400">
-        <span>Версия 2.5 · Офлайн + WebWorker f32</span>
+        <span>Версия 2.6 · База знаний + WebGPU-защита</span>
         <button
           type="button"
           onClick={async () => {

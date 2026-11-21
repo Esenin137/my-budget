@@ -1,4 +1,14 @@
-import { AppState, CategoryTuple, EncryptedPackage, HabitItem, NoteTab, UiSettings } from '../types';
+import {
+  AppState,
+  CategoryTuple,
+  EncryptedPackage,
+  HabitItem,
+  KnowledgeBaseState,
+  KnowledgeRule,
+  KnowledgeSource,
+  NoteTab,
+  UiSettings,
+} from '../types';
 
 export const STORAGE_KEY = 'my-budget-v1';
 const IDB_NAME = 'my-budget-idb-v2';
@@ -36,6 +46,41 @@ export function createDefaultHabits(): HabitItem[] {
     { id: 102, title: 'День без импульсивных покупок', icon: '🛡️', completedDates: [], createdAt: now + 1 },
     { id: 103, title: 'Вода и прогулка / зарядка', icon: '💧', completedDates: [], createdAt: now + 2 },
   ];
+}
+
+export const DEFAULT_KNOWLEDGE_SOURCES: KnowledgeSource[] = [
+  {
+    id: 'src-moex-index',
+    name: 'Мосбиржа (MOEX ISS — Индекс IMOEX и ОФЗ RGBI)',
+    url: 'https://iss.moex.com/iss/engines/stock/markets/index/boards/SNDX/securities.json?iss.meta=off&iss.only=securities,marketdata&securities=IMOEX,IMOEX2,RGBI,RGBITR',
+    kind: 'moex',
+    enabled: true,
+    isDefault: true,
+  },
+  {
+    id: 'src-moex-shares',
+    name: 'Мосбиржа (MOEX ISS — Популярные акции РФ)',
+    url: 'https://iss.moex.com/iss/engines/stock/markets/shares/boards/TQBR/securities.json?iss.meta=off&iss.only=securities,marketdata&securities=SBER,GAZP,LKOH,YDEX,ROSN,VTBR,MOEX,NVTK,PLZL,GMKN',
+    kind: 'moex',
+    enabled: true,
+    isDefault: true,
+  },
+  {
+    id: 'src-rbc-rss',
+    name: 'Новости РБК (Финансы и экономика)',
+    url: 'https://api.rss2json.com/v1/api.json?rss_url=https://rssexport.rbc.ru/rbcnews/news/20/full.rss',
+    kind: 'rss',
+    enabled: true,
+    isDefault: true,
+  },
+];
+
+export function createDefaultKnowledgeBase(): KnowledgeBaseState {
+  return {
+    rules: [],
+    sources: DEFAULT_KNOWLEDGE_SOURCES.map((s) => ({ ...s })),
+    onlineSearchEnabled: false,
+  };
 }
 
 export const DEFAULT_CATS: CategoryTuple[] = [
@@ -100,6 +145,7 @@ export function createInitialState(): AppState {
     activeNoteTabId: 'tab-shop',
     habits: createDefaultHabits(),
     uiSettings: createDefaultUiSettings(),
+    knowledgeBase: createDefaultKnowledgeBase(),
   };
 }
 
@@ -187,6 +233,41 @@ export function hydrateState(raw: Partial<AppState> | null | undefined): AppStat
     localModelId: rawUi?.localModelId || defUi.localModelId,
   };
 
+  const rawKb = raw.knowledgeBase;
+  const defKb = createDefaultKnowledgeBase();
+  const hydratedRules: KnowledgeRule[] = Array.isArray(rawKb?.rules)
+    ? rawKb.rules
+        .filter((r) => r && typeof r.content === 'string' && r.content.trim().length > 0)
+        .map((r) => ({
+          id: typeof r.id === 'number' ? r.id : Date.now() + Math.floor(Math.random() * 1000),
+          title: typeof r.title === 'string' && r.title.trim() ? r.title.trim() : 'Правило из базы знаний',
+          content: r.content.trim(),
+          sourceType: r.sourceType === 'file' ? 'file' : 'manual',
+          fileName: typeof r.fileName === 'string' ? r.fileName : undefined,
+          createdAt: typeof r.createdAt === 'number' ? r.createdAt : Date.now(),
+        }))
+    : [];
+
+  const hydratedSources: KnowledgeSource[] =
+    Array.isArray(rawKb?.sources) && rawKb.sources.length > 0
+      ? rawKb.sources
+          .filter((s) => s && typeof s.url === 'string' && /^https:\/\//i.test(s.url.trim()))
+          .map((s) => ({
+            id: typeof s.id === 'string' && s.id ? s.id : `src-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+            name: typeof s.name === 'string' && s.name.trim() ? s.name.trim() : s.url.trim(),
+            url: s.url.trim(),
+            kind: s.kind === 'moex' || s.kind === 'rss' || s.kind === 'json' || s.kind === 'text' ? s.kind : 'text',
+            enabled: s.enabled !== false,
+            isDefault: Boolean(s.isDefault),
+          }))
+      : defKb.sources;
+
+  const knowledgeBase: KnowledgeBaseState = {
+    rules: hydratedRules,
+    sources: hydratedSources,
+    onlineSearchEnabled: rawKb?.onlineSearchEnabled === true,
+  };
+
   return {
     tx,
     budget: raw.budget || 0,
@@ -205,6 +286,7 @@ export function hydrateState(raw: Partial<AppState> | null | undefined): AppStat
     activeNoteTabId,
     habits: Array.isArray(raw.habits) ? raw.habits : base.habits,
     uiSettings,
+    knowledgeBase,
   };
 }
 
