@@ -50,7 +50,7 @@ export default function InvestmentsTab({
     investments.freeCash ? String(investments.freeCash) : ''
   );
   const [monthlyPlanInp, setMonthlyPlanInp] = useState(() =>
-    investments.monthlyPlan ? String(investments.monthlyPlan) : '5000'
+    investments.monthlyPlan ? String(investments.monthlyPlan) : ''
   );
   const [brokerCustomInp, setBrokerCustomInp] = useState(() => investments.brokerCustomName || '');
 
@@ -78,7 +78,7 @@ export default function InvestmentsTab({
 
   useEffect(() => {
     setFreeCashInp(investments.freeCash ? String(investments.freeCash) : '');
-    setMonthlyPlanInp(String(investments.monthlyPlan ?? 5000));
+    setMonthlyPlanInp(investments.monthlyPlan ? String(investments.monthlyPlan) : '');
     setBrokerCustomInp(investments.brokerCustomName || '');
   }, [investments.freeCash, investments.monthlyPlan, investments.brokerCustomName]);
 
@@ -344,8 +344,14 @@ export default function InvestmentsTab({
         </div>
 
         <div className="sum-card card-inv-iis" role="region" aria-label="Вычет ИИС 13%">
-          <div className="lbl">Вычет ИИС (13%):</div>
-          <div className="val tabular-nums">+{formatMoney(summary.iisDeduction13)}</div>
+          <div className="lbl">
+            {summary.iisDeduction13 > 0
+              ? `Вычет ИИС 13% (план ${formatMoney(investments.monthlyPlan)}/м):`
+              : 'Вычет ИИС (13%):'}
+          </div>
+          <div className="val tabular-nums">
+            {summary.iisDeduction13 > 0 ? `+${formatMoney(summary.iisDeduction13)}` : formatMoney(0)}
+          </div>
         </div>
       </div>
 
@@ -403,7 +409,7 @@ export default function InvestmentsTab({
                 className="fin-input w-full mt-1 tabular-nums"
                 value={monthlyPlanInp}
                 onChange={(e) => setMonthlyPlanInp(e.target.value)}
-                placeholder="5000"
+                placeholder="Например, 5000"
               />
             </label>
           </div>
@@ -425,10 +431,19 @@ export default function InvestmentsTab({
         </form>
 
         <div className="pt-2 border-t border-[var(--line)] space-y-1 fin-sub tabular-nums">
-          <div>
-            Вычет ИИС 13%: {formatMoney(investments.monthlyPlan)}/мес ({formatMoney(summary.annualIisContribution)}/год) →{' '}
-            <b className="text-[var(--ink)]">+{formatMoney(summary.iisDeduction13)}</b> (до 52 000 ₽)
-          </div>
+          {investments.monthlyPlan > 0 ? (
+            <div>
+              Ваш расчёт вычета ИИС 13%: {formatMoney(investments.monthlyPlan)}/мес (
+              {formatMoney(summary.annualIisContribution)}/год) →{' '}
+              <b className="text-[var(--ink)]">+{formatMoney(summary.iisDeduction13)}</b> (лимит базы
+              400 000 ₽/год → до 52 000 ₽)
+            </div>
+          ) : (
+            <div>
+              План пополнения ИИС пока не задан (вычет 0 ₽). <b>Пример:</b> при пополнении 5 000 ₽/мес
+              (60 000 ₽/год) вычет 13% составит +7 800 ₽/год.
+            </div>
+          )}
           {summary.annualPassiveIncome > 0 && (
             <div>
               Прогноз выплат: ~<b className="text-emerald-400">{formatMoney(summary.monthlyPassiveIncome)}/мес</b> ·{' '}
@@ -918,6 +933,13 @@ export default function InvestmentsTab({
                 + В портфель
               </button>
             </div>
+          </div>
+        )}
+
+        {scannerBudget === 0 && (
+          <div className="fin-sub">
+            Свободные деньги и план пополнения не заданы (0 ₽) — ниже показаны справочные цены бумаг.
+            Укажите сумму выше для расчёта покупок под ваш бюджет.
           </div>
         )}
 

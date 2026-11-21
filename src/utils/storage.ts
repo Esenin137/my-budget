@@ -93,7 +93,7 @@ export function createDefaultInvestments(): InvestmentsState {
     broker: 'sber',
     brokerCustomName: '',
     freeCash: 0,
-    monthlyPlan: 5000,
+    monthlyPlan: 0,
     assets: [],
     lastQuotesSyncAt: null,
   };

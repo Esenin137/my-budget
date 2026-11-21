@@ -601,7 +601,11 @@ export function runLocalAdvisor(
     const lines = ['Как вернуть деньги налоговым вычетом 13% по вашим данным:'];
     if (invSummary.iisDeduction13 > 0) {
       lines.push(
-        `• По ИИС (план ${formatMoney(state.investments.monthlyPlan)}/мес = ${formatMoney(invSummary.annualIisContribution)}/год): возврат 13% составит +${formatMoney(invSummary.iisDeduction13)}/год.`
+        `• По ИИС (ваш план ${formatMoney(state.investments.monthlyPlan)}/мес = ${formatMoney(invSummary.annualIisContribution)}/год): расчётный возврат 13% составит +${formatMoney(invSummary.iisDeduction13)}/год.`
+      );
+    } else {
+      lines.push(
+        '• По ИИС: план пополнения пока не задан (вычет 0 ₽). Пример: при пополнении 5 000 ₽/мес (60 000 ₽/год) вычет 13% составит +7 800 ₽/год.'
       );
     }
     if (H.taxEdu > 0 || H.taxMed > 0) {
@@ -610,7 +614,7 @@ export function runLocalAdvisor(
       );
     } else {
       lines.push(
-        '• За период пока не найдено отмеченных трат на платную медицину или обучение (13% возвращаются по чекам и справкам об оплате).'
+        '• За период не найдено трат на платную медицину или обучение (вычет 0 ₽). 13% возвращаются по чекам и справкам об оплате.'
       );
     }
     if (H.taxMort > 0) {
@@ -648,34 +652,58 @@ export function runLocalAdvisor(
   }
 
   if (/подушк|резерв|заначк|чёрный день|черный день|безопасн/.test(q)) {
-    const baseMonth = H.fixedSum > 0 ? H.fixedSum : H.sumOut > 0 ? H.sumOut : 35000;
-    const minPad = baseMonth * 3;
-    const optPad = baseMonth * 6;
     const curSaved =
       invSummary.bankDepositsTotal +
       invSummary.budgetDepositsTotal +
       invSummary.freeCash +
       (state.family.totalSavings || 0);
+    const hasExpenses = H.fixedSum > 0 || H.sumOut > 0;
+    if (!hasExpenses) {
+      return {
+        matched: true,
+        sourceLabel: 'Личные финансы · Расчёт подушки безопасности',
+        reply: `Ваши расходы за период ещё не внесены, поэтому точный размер подушки рассчитать пока нельзя.\n• Сейчас в накоплениях и вкладах: ${formatMoney(curSaved)}\n• Пример расчёта (для условных расходов 35 000 ₽/мес): минимум на 3 месяца — 105 000 ₽, комфорт на 6 месяцев — 210 000 ₽.\nВнесите траты в разделе «Расходы», и я рассчитаю подушку точно по вашим цифрам.`,
+      };
+    }
+    const baseMonth = H.fixedSum > 0 ? H.fixedSum : H.sumOut;
+    const minPad = baseMonth * 3;
+    const optPad = baseMonth * 6;
     const pctReady = minPad > 0 ? Math.min(100, Math.round((curSaved / minPad) * 100)) : 0;
     return {
       matched: true,
       sourceLabel: 'Личные финансы · Вклады, свободный кэш и семейные накопления',
-      reply: `Расчёт подушки безопасности:\n• Базовые расходы в месяц: ${formatMoney(baseMonth)}\n• Минимум на 3 месяца: ${formatMoney(minPad)} (собрано ${formatMoney(curSaved)} — ${pctReady}%)\n• Комфорт на 6 месяцев: ${formatMoney(optPad)}\nДержите резерв на накопительном счёте с ежедневным остатком или в фондах ликвидности.`,
+      reply: `Расчёт подушки безопасности по вашим данным:\n• Базовые расходы в месяц: ${formatMoney(baseMonth)}\n• Минимум на 3 месяца: ${formatMoney(minPad)} (собрано ${formatMoney(curSaved)} — ${pctReady}%)\n• Комфорт на 6 месяцев: ${formatMoney(optPad)}\nДержите резерв на накопительном счёте с ежедневным остатком или в фондах ликвидности.`,
     };
   }
 
   if (/выгодн|вклад\s*vs|sbmm|lqdt|иис|офз|акци/.test(q) && !/лимит\S*\s+иис|закон|правил\S*\s+иис|новы\S*\s+иис|иис-?3/.test(q)) {
-    const investBase = invSummary.freeCash > 0 ? invSummary.freeCash : H.left > 0 ? H.left : state.investments.monthlyPlan || 5000;
+    const userBase =
+      invSummary.freeCash > 0
+        ? invSummary.freeCash
+        : H.left > 0
+        ? H.left
+        : state.investments.monthlyPlan > 0
+        ? state.investments.monthlyPlan
+        : 0;
+    const isExample = userBase === 0;
+    const investBase = isExample ? 5000 : userBase;
     const dep1Y = Math.round(investBase * 1.17);
     const iis1Y = Math.round(investBase * 1.16 + investBase * 0.13);
     const ownLine =
       invSummary.investedSecuritiesTotal > 0
-        ? `\n• Сейчас в вашем портфеле: ОФЗ ${formatMoney(invSummary.couponsTotal)}, акции ${formatMoney(invSummary.dividendsTotal)}, вычет 13% по плану ИИС: +${formatMoney(invSummary.iisDeduction13)}/год.`
+        ? `\n• Сейчас в вашем портфеле: ОФЗ ${formatMoney(invSummary.couponsTotal)}, акции ${formatMoney(invSummary.dividendsTotal)}${
+            invSummary.iisDeduction13 > 0
+              ? `, вычет 13% по плану ИИС: +${formatMoney(invSummary.iisDeduction13)}/год`
+              : ''
+          }.`
         : '';
+    const heading = isExample
+      ? `Свои суммы пока не заданы — привожу пример расчёта на условной сумме ${formatMoney(investBase)}:`
+      : `Сравнение на вашей сумме ${formatMoney(investBase)}:`;
     return {
       matched: true,
       sourceLabel: 'Личные финансы · Раздел «Пассивный доход»',
-      reply: `Сравнение на сумме ${formatMoney(investBase)}:\n1. Накопительный счёт / фонд ликвидности (~16–17%): через год ~${formatMoney(dep1Y)}, доступ в любой день.\n2. ОФЗ на ИИС (~16% + вычет 13% НДФЛ): в первый год отдача до ~${formatMoney(iis1Y)}.${ownLine}\nПравило: сначала подушка на 3 месяца на вкладе, затем регулярные пополнения ИИС (подбор бумаг доступен во вкладке «Пассивный доход → Сканер рынка»).`,
+      reply: `${heading}\n1. Накопительный счёт / фонд ликвидности (~16–17%): через год ~${formatMoney(dep1Y)}, доступ в любой день.\n2. ОФЗ на ИИС (~16% + вычет 13% НДФЛ): в первый год отдача до ~${formatMoney(iis1Y)}.${ownLine}\nПравило: сначала подушка на 3 месяца на вкладе, затем регулярные пополнения ИИС (подбор бумаг доступен во вкладке «Пассивный доход → Сканер рынка»).`,
     };
   }
 

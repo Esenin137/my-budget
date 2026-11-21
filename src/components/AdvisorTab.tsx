@@ -186,7 +186,11 @@ export default function AdvisorTab({
 
     const invSummary = analyzeInvestments(state.investments, state.deposits);
     const brokerName = getBrokerLabel(state.investments.broker, state.investments.brokerCustomName);
-    const investmentsSummary = `Брокер: ${brokerName}; Капитал: ${Math.round(invSummary.grandCapitalTotal)} ₽ (ОФЗ: ${Math.round(invSummary.couponsTotal)} ₽, акции: ${Math.round(invSummary.dividendsTotal)} ₽, вклады: ${Math.round(invSummary.bankDepositsTotal + invSummary.budgetDepositsTotal)} ₽, кэш: ${Math.round(invSummary.freeCash)} ₽); план ИИС: ${Math.round(state.investments.monthlyPlan)} ₽/мес (вычет 13%: +${Math.round(invSummary.iisDeduction13)} ₽/год)`;
+    const iisPlanText =
+      state.investments.monthlyPlan > 0
+        ? `план ИИС: ${Math.round(state.investments.monthlyPlan)} ₽/мес (вычет 13%: +${Math.round(invSummary.iisDeduction13)} ₽/год)`
+        : 'план ИИС: не задан (0 ₽/мес, вычет 0 ₽)';
+    const investmentsSummary = `Брокер: ${brokerName}; Капитал: ${Math.round(invSummary.grandCapitalTotal)} ₽ (ОФЗ: ${Math.round(invSummary.couponsTotal)} ₽, акции: ${Math.round(invSummary.dividendsTotal)} ₽, вклады: ${Math.round(invSummary.bankDepositsTotal + invSummary.budgetDepositsTotal)} ₽, кэш: ${Math.round(invSummary.freeCash)} ₽); ${iisPlanText}`;
 
     return {
       sumIn: H.sumIn,
