@@ -41,6 +41,13 @@ export function createDefaultUiSettings(): UiSettings {
     aiVoiceEnabled: true,
     aiQuickPrompts: true,
     localModelId: DEFAULT_LOCAL_MODEL_ID,
+    aiCloudProvider: 'auto',
+    aiResponseStyle: 'balanced',
+    aiStrictMode: true,
+    aiHistoryTurns: 4,
+    aiIncludeFinanceContext: true,
+    aiUseKnowledgeBase: true,
+    aiCustomInstruction: '',
   };
 }
 
@@ -85,6 +92,8 @@ export function createDefaultKnowledgeBase(): KnowledgeBaseState {
     rules: [],
     sources: DEFAULT_KNOWLEDGE_SOURCES.map((s) => ({ ...s })),
     onlineSearchEnabled: false,
+    autoSyncOnLaunch: true,
+    lastAutoSyncAt: null,
   };
 }
 
@@ -255,6 +264,30 @@ export function hydrateState(raw: Partial<AppState> | null | undefined): AppStat
     aiVoiceEnabled: rawUi?.aiVoiceEnabled !== false,
     aiQuickPrompts: rawUi?.aiQuickPrompts !== false,
     localModelId: rawUi?.localModelId || defUi.localModelId,
+    aiCloudProvider:
+      rawUi?.aiCloudProvider === 'auto' ||
+      rawUi?.aiCloudProvider === 'gemini-flash' ||
+      rawUi?.aiCloudProvider === 'gemini-lite' ||
+      rawUi?.aiCloudProvider === 'openai'
+        ? rawUi.aiCloudProvider
+        : defUi.aiCloudProvider,
+    aiResponseStyle:
+      rawUi?.aiResponseStyle === 'concise' ||
+      rawUi?.aiResponseStyle === 'balanced' ||
+      rawUi?.aiResponseStyle === 'detailed'
+        ? rawUi.aiResponseStyle
+        : defUi.aiResponseStyle,
+    aiStrictMode: rawUi?.aiStrictMode !== false,
+    aiHistoryTurns:
+      typeof rawUi?.aiHistoryTurns === 'number' && [2, 4, 6].includes(rawUi.aiHistoryTurns)
+        ? rawUi.aiHistoryTurns
+        : defUi.aiHistoryTurns,
+    aiIncludeFinanceContext: rawUi?.aiIncludeFinanceContext !== false,
+    aiUseKnowledgeBase: rawUi?.aiUseKnowledgeBase !== false,
+    aiCustomInstruction:
+      typeof rawUi?.aiCustomInstruction === 'string'
+        ? rawUi.aiCustomInstruction.slice(0, 800)
+        : '',
   };
 
   const rawKb = raw.knowledgeBase;
@@ -290,6 +323,8 @@ export function hydrateState(raw: Partial<AppState> | null | undefined): AppStat
     rules: hydratedRules,
     sources: hydratedSources,
     onlineSearchEnabled: rawKb?.onlineSearchEnabled === true,
+    autoSyncOnLaunch: rawKb?.autoSyncOnLaunch !== false,
+    lastAutoSyncAt: typeof rawKb?.lastAutoSyncAt === 'number' ? rawKb.lastAutoSyncAt : null,
   };
 
   const validBrokers: BrokerId[] = ['sber', 'tbank', 'vtb', 'alfa', 'bks', 'other'];

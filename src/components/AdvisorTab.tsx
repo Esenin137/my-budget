@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
+  BookOpen,
   Check,
   Download,
   Flame,
@@ -9,6 +10,7 @@ import {
   Plus,
   Send,
   Settings,
+  SlidersHorizontal,
   Square,
   Trash2,
   X,
@@ -53,6 +55,7 @@ interface AdvisorTabProps {
   onToggleSec: (id: string) => void;
   onApplyAdvisorPatch: (patch: Partial<AppState>) => void;
   onOpenAiSettings: () => void;
+  onOpenKnowledgeSettings: () => void;
 }
 
 const QUICK_PROMPTS = [
@@ -103,6 +106,7 @@ export default function AdvisorTab({
   onToggleSec,
   onApplyAdvisorPatch,
   onOpenAiSettings,
+  onOpenKnowledgeSettings,
 }: AdvisorTabProps) {
   const [messages, setMessages] = useState<ChatMessage[]>([
     {
@@ -292,12 +296,13 @@ export default function AdvisorTab({
 
     // Step 2: User's personal Knowledge Base (saved rules & .txt/.md excerpts in IndexedDB)
     const kb = state.knowledgeBase;
-    const kbHits = searchKnowledgeRules(q, kb?.rules || [], 3);
+    const useKb = uiSettings.aiUseKnowledgeBase !== false;
+    const kbHits = useKb ? searchKnowledgeRules(q, kb?.rules || [], 3) : [];
 
     // Step 3: Local search in cached public online sources (ONLY if user explicitly enabled the toggle;
     // zero user query text or financial data is ever sent to any external server)
     let onlineHits: KnowledgeSearchHit[] = [];
-    if (kb?.onlineSearchEnabled && Array.isArray(kb.sources) && kb.sources.some((s) => s.enabled)) {
+    if (useKb && kb?.onlineSearchEnabled && Array.isArray(kb.sources) && kb.sources.some((s) => s.enabled)) {
       setBusyStage('thinking');
       try {
         const existingCache = await loadOnlineCacheMap();
@@ -316,8 +321,10 @@ export default function AdvisorTab({
     }
 
     const structured = composeStructuredOfflineAnswer(localCheck, kbHits, onlineHits);
+    const historyTurns = Math.min(6, Math.max(2, uiSettings.aiHistoryTurns || 4));
+    const includeFinance = uiSettings.aiIncludeFinanceContext !== false;
 
-    // 1) OFFLINE MODE (0 MB, default mode on startup — instant, honest, 100% private)
+    // 1) OFFLINE MODE (0 MB, instant, honest, 100% private)
     if (uiSettings.aiMode === 'offline') {
       setBusyStage('idle');
       setMessages((prev) => [
@@ -329,8 +336,6 @@ export default function AdvisorTab({
 
     // 2) LOCAL ON-DEVICE LLM (WebLLM with silent fallback to Offline Advisor on any WebGPU/VRAM error)
     if (uiSettings.aiMode === 'local-llm') {
-      // If local model isn't loaded or there are zero matching facts and user asked a pure unknown,
-      // avoid hallucinating or throwing red technical errors
       if (llmState.status !== 'ready') {
         setBusyStage('idle');
         setMessages((prev) => [
@@ -344,19 +349,25 @@ export default function AdvisorTab({
       try {
         const localHistory = messages
           .filter((m) => !m.isError)
-          .slice(-4)
+          .slice(-historyTurns)
           .map((m) => ({
             role: (m.isUser ? 'user' : 'assistant') as 'user' | 'assistant',
             content: m.html,
           }));
+        const baseSnapshot = includeFinance
+          ? buildTextSnapshot()
+          : 'Финансовая сводка отключена в настройках приватности.';
         const enrichedSnapshot = structured.kbContextForLlm
-          ? `${buildTextSnapshot()}\n\nРелевантные данные:\n${structured.kbContextForLlm}`
-          : buildTextSnapshot();
+          ? `${baseSnapshot}\n\nРелевантные данные и База знаний:\n${structured.kbContextForLlm}`
+          : baseSnapshot;
 
-        const reply = await askLocalLlm(q, enrichedSnapshot, localHistory);
+        const reply = await askLocalLlm(q, enrichedSnapshot, localHistory, {
+          responseStyle: uiSettings.aiResponseStyle,
+          strictMode: uiSettings.aiStrictMode,
+          customInstruction: uiSettings.aiCustomInstruction,
+          historyTurns,
+        });
 
-        // Silent fallback: if WebGPU / VRAM / Tokenizer / disposed error occurred,
-        // localLlm already unloaded & reset engine = null; serve Offline Advisor seamlessly with NO red error!
         if (!reply) {
           setMessages((prev) => [
             ...prev,
@@ -384,7 +395,6 @@ export default function AdvisorTab({
           { id: uid() + 1, isUser: false, html: `${reply}${patchNote}${sourceFooter}` },
         ]);
       } catch {
-        // Guaranteed silent fallback to Offline Advisor — never show red technical GPU errors
         setMessages((prev) => [
           ...prev,
           { id: uid() + 1, isUser: false, html: structured.text },
@@ -395,11 +405,19 @@ export default function AdvisorTab({
       return;
     }
 
-    // 3) CLOUD AI MODE (Server-side Gemini; falls back silently to Offline Advisor on static hosts)
+    // 3) CLOUD API MODE (Server-side Gemini / OpenAI-compatible gateway; falls back on static hosts)
     const historyForApi = messages
       .filter((m) => !m.isError)
-      .slice(-6)
+      .slice(-historyTurns)
       .map((m) => ({ role: (m.isUser ? 'user' : 'model') as 'user' | 'model', text: m.html }));
+
+    const knowledgeSnippets = [
+      ...kbHits.map((h) => ({ source: h.sourceLabel, text: `${h.title}: ${h.snippet}` })),
+      ...onlineHits.map((h) => ({
+        source: h.sourceLabel,
+        text: `${h.snippet}${h.updatedAt ? ` (${h.updatedAt})` : ''}`,
+      })),
+    ];
 
     setBusyStage('thinking');
 
@@ -409,14 +427,22 @@ export default function AdvisorTab({
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           question: q,
-          context: buildFinancialContext(),
+          context: includeFinance ? buildFinancialContext() : null,
           history: historyForApi,
+          knowledgeSnippets,
+          options: {
+            provider: uiSettings.aiCloudProvider || 'auto',
+            responseStyle: uiSettings.aiResponseStyle || 'balanced',
+            strictMode: uiSettings.aiStrictMode !== false,
+            customInstruction: uiSettings.aiCustomInstruction || '',
+            includeFinanceContext: includeFinance,
+          },
         }),
       });
       const rawText = await resp.text();
-      let data: { reply?: string; error?: string } = {};
+      let data: { reply?: string; error?: string; provider?: string } = {};
       try {
-        data = JSON.parse(rawText) as { reply?: string; error?: string };
+        data = JSON.parse(rawText) as { reply?: string; error?: string; provider?: string };
       } catch {
         // Static hosting without Node.js backend — seamlessly serve Offline Advisor + Knowledge Base
         setMessages((prev) => [
@@ -432,7 +458,14 @@ export default function AdvisorTab({
       if (!resp.ok || !data.reply) {
         setMessages((prev) => [
           ...prev,
-          { id: uid() + 1, isUser: false, html: structured.text },
+          {
+            id: uid() + 1,
+            isUser: false,
+            isError: true,
+            html:
+              (data.error || 'Не удалось получить ответ от облачного API.') +
+              '\n\nВы можете проверить статус API в «Настройки → Движок и API» или переключиться на «Офлайн-аналитик (0 МБ)».',
+          },
         ]);
         return;
       }
@@ -442,10 +475,16 @@ export default function AdvisorTab({
         : localCheck.statePatch?.saveRule
         ? '\n\n✅ Автоправило накопления сохранено в разделе «Бюджет».'
         : '';
+      const sourceFooter =
+        kbHits.length > 0
+          ? `\n\n📌 Источник: ${kbHits[0].sourceLabel}`
+          : onlineHits.length > 0
+          ? `\n\n📌 Источник: ${onlineHits[0].sourceLabel}`
+          : '';
 
       setMessages((prev) => [
         ...prev,
-        { id: uid() + 1, isUser: false, html: `${data.reply}${patchNote}` },
+        { id: uid() + 1, isUser: false, html: `${data.reply}${patchNote}${sourceFooter}` },
       ]);
     } catch {
       setMessages((prev) => [
@@ -835,6 +874,31 @@ export default function AdvisorTab({
                 )}
               </button>
             )}
+          </div>
+
+          {/* Быстрый доступ к обучению ИИ, доверенным ссылкам и настройкам API */}
+          <div className="grid grid-cols-2 gap-1.5">
+            <button
+              type="button"
+              onClick={onOpenKnowledgeSettings}
+              className="flex items-center justify-center gap-1.5 py-2 px-2.5 rounded-xl bg-emerald-500/12 hover:bg-emerald-500/20 border border-emerald-400/35 text-[11px] font-bold text-emerald-200 cursor-pointer transition"
+            >
+              <BookOpen className="w-3.5 h-3.5 shrink-0" />
+              <span className="truncate">
+                Обучить ИИ и ссылки
+                {(state.knowledgeBase?.rules?.length || 0) > 0
+                  ? ` (${state.knowledgeBase.rules.length})`
+                  : ''}
+              </span>
+            </button>
+            <button
+              type="button"
+              onClick={onOpenAiSettings}
+              className="flex items-center justify-center gap-1.5 py-2 px-2.5 rounded-xl bg-white/[0.05] hover:bg-white/[0.1] border border-white/12 text-[11px] font-bold text-slate-200 cursor-pointer transition"
+            >
+              <SlidersHorizontal className="w-3.5 h-3.5 shrink-0 text-[#9B8AFB]" />
+              <span className="truncate">Настройки ИИ и API</span>
+            </button>
           </div>
 
           {/* Панель быстрой загрузки локальной нейросети в режиме local-llm */}

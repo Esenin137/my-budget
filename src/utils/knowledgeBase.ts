@@ -2,12 +2,54 @@ import { KnowledgeRule, KnowledgeSource } from '../types';
 import { idbGetKv, idbPutKv } from './storage';
 
 export const KB_ONLINE_CACHE_KEY = 'my-budget-kb-online-cache-v1';
-export const MAX_RULE_FILE_BYTES = 512 * 1024; // 512 KB cap for .txt / .md uploads
+export const MAX_RULE_FILE_BYTES = 512 * 1024; // 512 KB cap for .txt / .md / .csv uploads
 const MAX_CACHED_ENTRIES_PER_SOURCE = 60;
 const SOURCE_STALE_MS = 15 * 60 * 1000; // 15 minutes
 
 export const HONEST_UNKNOWN_REPLY =
-  'Я пока не могу точно ответить на этот вопрос: в моей базе знаний нет актуальных данных по этой теме. Добавьте нужную выжимку или ссылку в разделе «Настройки → База знаний ассистента», и я сразу научусь это учитывать.';
+  'Я пока не могу точно ответить на этот вопрос: в моей базе знаний нет актуальных данных по этой теме. Откройте «Обучение ИИ» (в Настройках или кнопкой в чате) и добавьте выжимку или доверенную ссылку — я сразу начну опираться на них.';
+
+export const PRESET_TRUSTED_SOURCES: Omit<KnowledgeSource, 'enabled' | 'isDefault'>[] = [
+  {
+    id: 'src-cbr-fx',
+    name: 'Курсы валют ЦБ РФ (USD, EUR, CNY и др.)',
+    url: 'https://www.cbr-xml-daily.ru/daily_json.js',
+    kind: 'json',
+  },
+  {
+    id: 'src-moex-ofz',
+    name: 'Мосбиржа (MOEX ISS — Популярные ОФЗ)',
+    url: 'https://iss.moex.com/iss/engines/stock/markets/bonds/boards/TQOB/securities.json?iss.meta=off&iss.only=securities,marketdata&securities=SU26238RMFS4,SU26243RMFS4,SU26244RMFS2,SU26247RMFS5,SU26248RMFS3,SU26241RMFS8',
+    kind: 'moex',
+  },
+  {
+    id: 'src-moex-index',
+    name: 'Мосбиржа (Индекс IMOEX и ОФЗ RGBI)',
+    url: 'https://iss.moex.com/iss/engines/stock/markets/index/boards/SNDX/securities.json?iss.meta=off&iss.only=securities,marketdata&securities=IMOEX,IMOEX2,RGBI,RGBITR',
+    kind: 'moex',
+  },
+  {
+    id: 'src-moex-shares',
+    name: 'Мосбиржа (Популярные акции РФ)',
+    url: 'https://iss.moex.com/iss/engines/stock/markets/shares/boards/TQBR/securities.json?iss.meta=off&iss.only=securities,marketdata&securities=SBER,GAZP,LKOH,YDEX,ROSN,VTBR,MOEX,NVTK,PLZL,GMKN',
+    kind: 'moex',
+  },
+  {
+    id: 'src-rbc-rss',
+    name: 'Новости РБК (Финансы и экономика)',
+    url: 'https://api.rss2json.com/v1/api.json?rss_url=https://rssexport.rbc.ru/rbcnews/news/20/full.rss',
+    kind: 'rss',
+  },
+];
+
+export const SAMPLE_EXCERPT_TEMPLATE = {
+  title: 'Шаблон: ИИС-3 и налоговые вычеты РФ',
+  content:
+    'Пример памятки (проверьте актуальность и отредактируйте под себя):\n' +
+    '• Вычет на взнос по ИИС: до 400 000 ₽ в год (возврат НДФЛ 13% = до 52 000 ₽/год).\n' +
+    '• Социальный вычет (лечение, обучение, спорт): общий лимит 150 000 ₽/год (возврат 13% до 19 500 ₽), дорогостоящее лечение — без лимита.\n' +
+    '• Имущественный вычет при покупке жилья: с 2 000 000 ₽ (возврат до 260 000 ₽) + с процентов по ипотеке до 3 000 000 ₽ (до 390 000 ₽).',
+};
 
 export interface CachedOnlineEntry {
   title: string;
@@ -186,11 +228,19 @@ const SYNONYM_MAP: Record<string, string[]> = {
   'иис-3': ['иис', 'иис3'],
   иис: ['иис3', 'иис-3'],
   ндфл: ['налог', 'вычет', '13%'],
-  цб: ['ключев', 'ставк', 'центробанк'],
+  цб: ['ключев', 'ставк', 'центробанк', 'валют', 'курс'],
   ключев: ['ставк', 'цб'],
   рбк: ['новост', 'экономик'],
   котировк: ['акц', 'индекс', 'мосбирж', 'imoex'],
   акц: ['котировк', 'мосбирж', 'sber', 'gazp', 'lkoh'],
+  доллар: ['usd', 'валют', 'курс', 'цб'],
+  usd: ['доллар', 'валют', 'курс'],
+  евро: ['eur', 'валют', 'курс', 'цб'],
+  eur: ['евро', 'валют', 'курс'],
+  юан: ['cny', 'валют', 'курс', 'цб'],
+  cny: ['юан', 'валют', 'курс'],
+  валют: ['курс', 'usd', 'eur', 'cny', 'доллар', 'евро', 'юан'],
+  курс: ['валют', 'usd', 'eur', 'cny', 'доллар', 'евро', 'юан'],
 };
 
 const RU_SUFFIX_RE =
@@ -398,11 +448,44 @@ function parseMoexJson(data: Record<string, unknown>): CachedOnlineEntry[] {
   return entries;
 }
 
+function parseCbrDailyJson(data: Record<string, unknown>): CachedOnlineEntry[] {
+  const valute = data.Valute as Record<string, Record<string, unknown>> | undefined;
+  if (!valute || typeof valute !== 'object') return [];
+  const dateRaw = typeof data.Date === 'string' ? data.Date.slice(0, 10) : undefined;
+  const priority = ['USD', 'EUR', 'CNY', 'GBP', 'CHF', 'TRY', 'KZT', 'BYN', 'AED', 'JPY'];
+  const keys = [
+    ...priority.filter((k) => k in valute),
+    ...Object.keys(valute).filter((k) => !priority.includes(k)),
+  ].slice(0, MAX_CACHED_ENTRIES_PER_SOURCE);
+
+  const entries: CachedOnlineEntry[] = [];
+  for (const code of keys) {
+    const item = valute[code];
+    if (!item || typeof item !== 'object') continue;
+    const name = stripHtmlToPlainText(String(item.Name || code));
+    const nominal = Number(item.Nominal) || 1;
+    const value = Number(item.Value);
+    const prev = Number(item.Previous);
+    if (!Number.isFinite(value) || value <= 0) continue;
+    const diff = Number.isFinite(prev) && prev > 0 ? value - prev : 0;
+    const diffStr =
+      Math.abs(diff) >= 0.005 ? ` (${diff >= 0 ? '+' : ''}${diff.toFixed(2)} ₽ к прошлому дню)` : '';
+    const valFmt = new Intl.NumberFormat('ru-RU', { maximumFractionDigits: 2 }).format(value);
+    const nominalPrefix = nominal > 1 ? `за ${nominal} ед. ` : '';
+    entries.push({
+      title: `Курс ${code} — ${name}`,
+      snippet: `Официальный курс ЦБ РФ ${code} (${name}): ${nominalPrefix}${valFmt} ₽${diffStr}.`,
+      updatedAt: dateRaw,
+    });
+  }
+  return entries;
+}
+
 function parseRssOrJsonPayload(rawText: string, source: KnowledgeSource): CachedOnlineEntry[] {
   const trimmed = rawText.trim();
   if (!trimmed) return [];
 
-  // 1) Try JSON (MOEX ISS, rss2json, or generic JSON array/object)
+  // 1) Try JSON (MOEX ISS, CBR FX daily_json.js, rss2json, or generic JSON array/object)
   if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
     try {
       const parsed = JSON.parse(trimmed) as Record<string, unknown> | unknown[];
@@ -412,6 +495,12 @@ function parseRssOrJsonPayload(rawText: string, source: KnowledgeSource): Cached
         if (source.kind === 'moex' || ('securities' in parsed && 'marketdata' in parsed)) {
           const moexEntries = parseMoexJson(parsed);
           if (moexEntries.length > 0) return moexEntries;
+        }
+
+        // CBR Daily FX JSON format (cbr-xml-daily.ru/daily_json.js)
+        if ('Valute' in parsed && parsed.Valute && typeof parsed.Valute === 'object') {
+          const cbrEntries = parseCbrDailyJson(parsed);
+          if (cbrEntries.length > 0) return cbrEntries;
         }
 
         // rss2json / standard feed JSON format ({ items: [...] })
@@ -489,10 +578,18 @@ function parseRssOrJsonPayload(rawText: string, source: KnowledgeSource): Cached
   }));
 }
 
+function isStaticHostEnv(): boolean {
+  return (
+    typeof window !== 'undefined' &&
+    /\.github\.io$|\.pages\.dev$|\.netlify\.app$/i.test(window.location.hostname)
+  );
+}
+
 /**
  * Privacy-preserving public feed download:
  * NEVER sends the user's question, transaction sums, or any personal data outbound.
- * Downloads ONLY the static public source URL, strips all HTML, and caches plain text locally in IndexedDB.
+ * Downloads ONLY the static public source URL (directly, or via server proxy if browser CORS blocks it),
+ * strips all HTML, and caches plain text locally in IndexedDB.
  */
 export async function fetchOnlineSourceToCache(
   source: KnowledgeSource
@@ -509,6 +606,9 @@ export async function fetchOnlineSourceToCache(
     };
   }
 
+  let rawText = '';
+  let directErr: unknown = null;
+
   const controller = new AbortController();
   const timeout = window.setTimeout(() => controller.abort(), 9000);
 
@@ -523,7 +623,38 @@ export async function fetchOnlineSourceToCache(
     if (!resp.ok) {
       throw new Error(`HTTP ${resp.status}`);
     }
-    const rawText = await resp.text();
+    rawText = await resp.text();
+  } catch (err: unknown) {
+    directErr = err;
+  } finally {
+    window.clearTimeout(timeout);
+  }
+
+  // Fallback to server-side public source fetcher when browser CORS blocks a website
+  if (!rawText && !isStaticHostEnv()) {
+    const proxyController = new AbortController();
+    const proxyTimeout = window.setTimeout(() => proxyController.abort(), 10000);
+    try {
+      const proxyResp = await fetch('/api/kb/fetch', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url: valid.url }),
+        signal: proxyController.signal,
+      });
+      if (proxyResp.ok) {
+        const json = (await proxyResp.json()) as { content?: string };
+        if (typeof json.content === 'string' && json.content.trim()) {
+          rawText = json.content;
+        }
+      }
+    } catch {
+      // Fall through to friendly error below
+    } finally {
+      window.clearTimeout(proxyTimeout);
+    }
+  }
+
+  if (rawText) {
     const entries = parseRssOrJsonPayload(rawText, source);
     return {
       sourceId: source.id,
@@ -532,22 +663,36 @@ export async function fetchOnlineSourceToCache(
       status: 'ok',
       entries,
     };
-  } catch (err: unknown) {
-    const msg =
-      err instanceof Error && err.name === 'AbortError'
-        ? 'Таймаут загрузки (9 сек)'
-        : 'Не удалось загрузить (нет сети или ограничение CORS на сайте)';
-    return {
-      sourceId: source.id,
-      sourceName: source.name,
-      fetchedAt: Date.now(),
-      status: 'error',
-      error: msg,
-      entries: [],
-    };
-  } finally {
-    window.clearTimeout(timeout);
   }
+
+  const msg =
+    directErr instanceof Error && directErr.name === 'AbortError'
+      ? 'Таймаут загрузки (9 сек)'
+      : 'Не удалось загрузить (нет сети или сайт ограничивает прямой доступ CORS)';
+  return {
+    sourceId: source.id,
+    sourceName: source.name,
+    fetchedAt: Date.now(),
+    status: 'error',
+    error: msg,
+    entries: [],
+  };
+}
+
+export async function syncSingleOnlineSource(source: KnowledgeSource): Promise<OnlineCacheMap> {
+  const cache = await loadOnlineCacheMap();
+  const existing = cache[source.id];
+  const result = await fetchOnlineSourceToCache(source);
+  if (result.status === 'error' && existing?.entries?.length) {
+    cache[source.id] = {
+      ...existing,
+      error: result.error,
+    };
+  } else {
+    cache[source.id] = result;
+  }
+  await saveOnlineCacheMap(cache);
+  return cache;
 }
 
 export async function syncEnabledOnlineSources(

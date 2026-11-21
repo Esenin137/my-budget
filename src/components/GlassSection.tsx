@@ -38,7 +38,7 @@ export default function GlassSection({
           onToggleCollapse(id);
         }}
       >
-        <span className="flex items-center gap-2 min-w-0 truncate">{title}</span>
+        <span className="flex items-center gap-2 min-w-0 leading-snug">{title}</span>
         <span className="flex items-center gap-1.5 shrink-0">
           {rightExtra}
           {helpText && (

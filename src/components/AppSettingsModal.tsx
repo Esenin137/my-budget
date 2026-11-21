@@ -3,13 +3,16 @@ import {
   AlertTriangle,
   BookOpen,
   Bot,
+  CheckCircle2,
   Cloud,
   Cpu,
   Download,
+  Edit3,
   FileText,
   Globe,
   HardDrive,
   LayoutGrid,
+  Link2,
   Loader2,
   Lock,
   Palette,
@@ -17,11 +20,15 @@ import {
   RefreshCw,
   RotateCcw,
   ShieldCheck,
+  SlidersHorizontal,
+  Sparkles,
   Trash2,
   Upload,
 } from 'lucide-react';
 import {
+  AiCloudProvider,
   AiMode,
+  AiResponseStyle,
   KnowledgeBaseState,
   KnowledgeRule,
   KnowledgeSource,
@@ -44,7 +51,10 @@ import {
   loadOnlineCacheMap,
   MAX_RULE_FILE_BYTES,
   OnlineCacheMap,
+  PRESET_TRUSTED_SOURCES,
+  SAMPLE_EXCERPT_TEMPLATE,
   syncEnabledOnlineSources,
+  syncSingleOnlineSource,
   validateSafeSourceUrl,
 } from '../utils/knowledgeBase';
 import { uid } from '../utils/finance';
@@ -54,7 +64,7 @@ import { PWAInstallButton } from './PWAInstallButton';
 interface AppSettingsModalProps {
   settings: UiSettings;
   knowledgeBase: KnowledgeBaseState;
-  initialTab?: 'layout' | 'ai';
+  initialTab?: 'layout' | 'ai' | 'kb';
   activePin?: string | null;
   fontLabel?: string;
   onOpenPin?: () => void;
@@ -63,6 +73,15 @@ interface AppSettingsModalProps {
   onChangeKnowledgeBase: (next: KnowledgeBaseState) => void;
   onClose: () => void;
   onShowToast: (msg: string) => void;
+}
+
+interface ServerApiStatus {
+  checked: boolean;
+  loading: boolean;
+  reachable: boolean;
+  geminiAvailable: boolean;
+  openaiAvailable: boolean;
+  openaiModel: string | null;
 }
 
 interface SectionConfigGroup {
@@ -187,29 +206,93 @@ export default function AppSettingsModal({
   onClose,
   onShowToast,
 }: AppSettingsModalProps) {
-  const [innerTab, setInnerTab] = useState<'layout' | 'ai'>(initialTab);
+  const [innerTab, setInnerTab] = useState<'layout' | 'ai' | 'kb'>(initialTab);
   const [llmState, setLlmState] = useState<LocalLlmState>(() => getLocalLlmState());
   const webGpuOk = isWebGpuSupported();
+
+  // Server API status state
+  const [apiStatus, setApiStatus] = useState<ServerApiStatus>({
+    checked: false,
+    loading: false,
+    reachable: false,
+    geminiAvailable: false,
+    openaiAvailable: false,
+    openaiModel: null,
+  });
 
   // Knowledge Base form state
   const [ruleTitle, setRuleTitle] = useState('');
   const [ruleText, setRuleText] = useState('');
+  const [editingRuleId, setEditingRuleId] = useState<number | null>(null);
+  const [showAddSourceForm, setShowAddSourceForm] = useState(false);
   const [newSourceName, setNewSourceName] = useState('');
   const [newSourceUrl, setNewSourceUrl] = useState('');
   const [sourceUrlError, setSourceUrlError] = useState<string | null>(null);
   const [onlineCache, setOnlineCache] = useState<OnlineCacheMap>({});
   const [syncingSources, setSyncingSources] = useState(false);
+  const [syncingSourceId, setSyncingSourceId] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const importKbInputRef = useRef<HTMLInputElement | null>(null);
+  const sourceUrlInputRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
     return subscribeLocalLlm(setLlmState);
   }, []);
 
   useEffect(() => {
-    if (innerTab === 'ai') {
+    if (innerTab === 'kb') {
       loadOnlineCacheMap()
         .then(setOnlineCache)
         .catch(() => {});
+    }
+  }, [innerTab]);
+
+  const checkServerApiStatus = async (silent = false) => {
+    setApiStatus((prev) => ({ ...prev, loading: true }));
+    try {
+      const resp = await fetch('/api/ai/status', { cache: 'no-store' });
+      const text = await resp.text();
+      const json = JSON.parse(text) as {
+        ok?: boolean;
+        geminiAvailable?: boolean;
+        openaiAvailable?: boolean;
+        openaiModel?: string | null;
+      };
+      if (!resp.ok || !json.ok) throw new Error('unavailable');
+      const next: ServerApiStatus = {
+        checked: true,
+        loading: false,
+        reachable: true,
+        geminiAvailable: Boolean(json.geminiAvailable),
+        openaiAvailable: Boolean(json.openaiAvailable),
+        openaiModel: json.openaiModel || null,
+      };
+      setApiStatus(next);
+      if (!silent) {
+        if (next.geminiAvailable || next.openaiAvailable) {
+          onShowToast('Серверный API доступен и готов к работе.');
+        } else {
+          onShowToast('Сервер отвечает, но ключ API не задан в Settings → Secrets.');
+        }
+      }
+    } catch {
+      setApiStatus({
+        checked: true,
+        loading: false,
+        reachable: false,
+        geminiAvailable: false,
+        openaiAvailable: false,
+        openaiModel: null,
+      });
+      if (!silent) {
+        onShowToast('Серверный API недоступен (статический хостинг). Используйте Офлайн-аналитик или WebLLM.');
+      }
+    }
+  };
+
+  useEffect(() => {
+    if (innerTab === 'ai' && !apiStatus.checked && !apiStatus.loading) {
+      void checkServerApiStatus(true);
     }
   }, [innerTab]);
 
@@ -291,7 +374,7 @@ export default function AppSettingsModal({
   };
 
   // Knowledge Base handlers
-  const handleAddRule = () => {
+  const handleAddOrSaveRule = () => {
     const content = ruleText.trim();
     if (!content) {
       onShowToast('Введите текст правила или выжимки.');
@@ -301,6 +384,21 @@ export default function AppSettingsModal({
       ruleTitle.trim() ||
       content.split(/\n/)[0].replace(/^#+\s*/, '').trim().slice(0, 60) ||
       'Правило из базы знаний';
+
+    if (editingRuleId !== null) {
+      onChangeKnowledgeBase({
+        ...knowledgeBase,
+        rules: knowledgeBase.rules.map((r) =>
+          r.id === editingRuleId ? { ...r, title: autoTitle, content } : r
+        ),
+      });
+      setEditingRuleId(null);
+      setRuleTitle('');
+      setRuleText('');
+      onShowToast('Выжимка обновлена.');
+      return;
+    }
+
     const nextRule: KnowledgeRule = {
       id: uid(),
       title: autoTitle,
@@ -314,47 +412,164 @@ export default function AppSettingsModal({
     });
     setRuleTitle('');
     setRuleText('');
-    onShowToast('Правило сохранено в Базу знаний (IndexedDB).');
+    onShowToast('Выжимка сохранена в Базу знаний (IndexedDB).');
   };
 
-  const handleUploadRuleFile = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleStartEditRule = (rule: KnowledgeRule) => {
+    setEditingRuleId(rule.id);
+    setRuleTitle(rule.title);
+    setRuleText(rule.content);
+  };
+
+  const handleCancelEditRule = () => {
+    setEditingRuleId(null);
+    setRuleTitle('');
+    setRuleText('');
+  };
+
+  const handleInsertSampleTemplate = () => {
+    setEditingRuleId(null);
+    setRuleTitle(SAMPLE_EXCERPT_TEMPLATE.title);
+    setRuleText(SAMPLE_EXCERPT_TEMPLATE.content);
+    onShowToast('Шаблон подставлен в форму — отредактируйте и нажмите «Сохранить выжимку».');
+  };
+
+  const handleUploadRuleFiles = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const fileList = Array.from(e.target.files || []);
+    e.target.value = '';
+    if (!fileList.length) return;
+
+    const addedRules: KnowledgeRule[] = [];
+    let skipped = 0;
+
+    for (const file of fileList) {
+      if (!/\.(txt|md|csv)$/i.test(file.name)) {
+        skipped += 1;
+        continue;
+      }
+      if (file.size > MAX_RULE_FILE_BYTES) {
+        skipped += 1;
+        continue;
+      }
+      try {
+        const text = (await file.text()).trim();
+        if (!text) {
+          skipped += 1;
+          continue;
+        }
+        const cleanName = file.name.replace(/\.(txt|md|csv)$/i, '');
+        addedRules.push({
+          id: uid() + addedRules.length,
+          title: cleanName || 'Загруженный документ',
+          content: text,
+          sourceType: 'file',
+          fileName: file.name,
+          createdAt: Date.now(),
+        });
+      } catch {
+        skipped += 1;
+      }
+    }
+
+    if (addedRules.length > 0) {
+      onChangeKnowledgeBase({
+        ...knowledgeBase,
+        rules: [...addedRules, ...knowledgeBase.rules],
+      });
+      onShowToast(
+        skipped > 0
+          ? `Загружено файлов: ${addedRules.length} (пропущено ${skipped}: нужен .txt/.md/.csv до 512 КБ).`
+          : `Загружено в Базу знаний: ${addedRules.length} файл(ов).`
+      );
+    } else {
+      onShowToast('Поддерживаются текстовые файлы .txt, .md, .csv размером до 512 КБ.');
+    }
+  };
+
+  const handleExportKnowledgeBase = () => {
+    const payload = {
+      version: 1,
+      exportedAt: new Date().toISOString(),
+      rules: knowledgeBase.rules,
+      sources: knowledgeBase.sources,
+    };
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `my-finance-ai-kb-${new Date().toISOString().slice(0, 10)}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+    onShowToast('База знаний и список ссылок экспортированы в JSON.');
+  };
+
+  const handleImportKnowledgeBase = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     e.target.value = '';
     if (!file) return;
-    if (!/\.(txt|md)$/i.test(file.name)) {
-      onShowToast('Поддерживаются только текстовые файлы .txt и .md.');
+    if (file.size > 2 * 1024 * 1024) {
+      onShowToast('Файл базы знаний слишком большой (максимум 2 МБ).');
       return;
     }
-    if (file.size > MAX_RULE_FILE_BYTES) {
-      onShowToast('Файл слишком большой (максимум 512 КБ). Разделите текст на выжимки.');
-      return;
-    }
-    const reader = new FileReader();
-    reader.onload = () => {
-      const text = typeof reader.result === 'string' ? reader.result.trim() : '';
-      if (!text) {
-        onShowToast('Файл пустой.');
+    try {
+      const parsed = JSON.parse(await file.text()) as {
+        rules?: KnowledgeRule[];
+        sources?: KnowledgeSource[];
+      };
+      const existingRuleTitles = new Set(knowledgeBase.rules.map((r) => `${r.title}|${r.content.slice(0, 60)}`));
+      const importedRules: KnowledgeRule[] = Array.isArray(parsed.rules)
+        ? parsed.rules
+            .filter((r) => r && typeof r.content === 'string' && r.content.trim())
+            .map((r, idx) => ({
+              id: uid() + idx,
+              title: typeof r.title === 'string' && r.title.trim() ? r.title.trim() : 'Импортированная выжимка',
+              content: r.content.trim(),
+              sourceType: r.sourceType === 'file' ? ('file' as const) : ('manual' as const),
+              fileName: typeof r.fileName === 'string' ? r.fileName : undefined,
+              createdAt: typeof r.createdAt === 'number' ? r.createdAt : Date.now(),
+            }))
+            .filter((r) => !existingRuleTitles.has(`${r.title}|${r.content.slice(0, 60)}`))
+        : [];
+
+      const existingUrls = new Set(knowledgeBase.sources.map((s) => s.url));
+      const importedSources: KnowledgeSource[] = Array.isArray(parsed.sources)
+        ? parsed.sources
+            .map((s, idx) => {
+              const check = validateSafeSourceUrl(String(s?.url || ''));
+              if (!check.ok || existingUrls.has(check.url)) return null;
+              existingUrls.add(check.url);
+              return {
+                id: `src-imp-${uid()}-${idx}`,
+                name: typeof s?.name === 'string' && s.name.trim() ? s.name.trim() : new URL(check.url).hostname,
+                url: check.url,
+                kind: check.inferredKind,
+                enabled: s?.enabled !== false,
+                isDefault: false,
+              } as KnowledgeSource;
+            })
+            .filter((x): x is KnowledgeSource => Boolean(x))
+        : [];
+
+      if (importedRules.length === 0 && importedSources.length === 0) {
+        onShowToast('Новых выжимок или ссылок в файле не найдено.');
         return;
       }
-      const cleanName = file.name.replace(/\.(txt|md)$/i, '');
-      const nextRule: KnowledgeRule = {
-        id: uid(),
-        title: cleanName || 'Загруженный документ',
-        content: text,
-        sourceType: 'file',
-        fileName: file.name,
-        createdAt: Date.now(),
-      };
+
       onChangeKnowledgeBase({
         ...knowledgeBase,
-        rules: [nextRule, ...knowledgeBase.rules],
+        rules: [...importedRules, ...knowledgeBase.rules],
+        sources: [...knowledgeBase.sources, ...importedSources],
       });
-      onShowToast(`Файл «${file.name}» добавлен в Базу знаний.`);
-    };
-    reader.readAsText(file, 'utf-8');
+      onShowToast(`Импортировано: ${importedRules.length} выжимок и ${importedSources.length} ссылок.`);
+    } catch {
+      onShowToast('Не удалось прочитать JSON-файл Базы знаний.');
+    }
   };
 
   const handleDeleteRule = (id: number) => {
+    if (editingRuleId === id) {
+      handleCancelEditRule();
+    }
     onChangeKnowledgeBase({
       ...knowledgeBase,
       rules: knowledgeBase.rules.filter((r) => r.id !== id),
@@ -370,16 +585,16 @@ export default function AppSettingsModal({
     if (enabled) {
       setSyncingSources(true);
       try {
-        const updated = await syncEnabledOnlineSources(knowledgeBase.sources);
+        const updated = await syncEnabledOnlineSources(knowledgeBase.sources, { force: true });
         setOnlineCache(updated);
-        onShowToast('Онлайн-источники включены и загружены в локальный кэш.');
+        onShowToast('Доверенные источники включены и обновлены в кэше.');
       } catch {
-        onShowToast('Онлайн-поиск включён. Нажмите «Обновить» при наличии интернета.');
+        onShowToast('Источники включены. Нажмите «Обновить сейчас» при наличии сети.');
       } finally {
         setSyncingSources(false);
       }
     } else {
-      onShowToast('Поиск в онлайн-источниках отключён (100% офлайн).');
+      onShowToast('Доверенные онлайн-источники отключены (100% офлайн).');
     }
   };
 
@@ -389,10 +604,15 @@ export default function AppSettingsModal({
     try {
       const updated = await syncEnabledOnlineSources(knowledgeBase.sources, { force: true });
       setOnlineCache(updated);
+      const enabledCount = knowledgeBase.sources.filter((s) => s.enabled).length;
       const okCount = knowledgeBase.sources.filter(
         (s) => s.enabled && updated[s.id]?.status === 'ok'
       ).length;
-      onShowToast(`Обновлено источников: ${okCount} из ${knowledgeBase.sources.filter((s) => s.enabled).length}.`);
+      onChangeKnowledgeBase({
+        ...knowledgeBase,
+        lastAutoSyncAt: Date.now(),
+      });
+      onShowToast(`Обновлено источников: ${okCount} из ${enabledCount}.`);
     } catch {
       onShowToast('Не удалось обновить часть источников.');
     } finally {
@@ -400,29 +620,78 @@ export default function AppSettingsModal({
     }
   };
 
-  const handleAddCustomSource = () => {
+  const handleRefreshSingleSource = async (src: KnowledgeSource) => {
+    if (syncingSourceId || syncingSources) return;
+    setSyncingSourceId(src.id);
+    try {
+      const updated = await syncSingleOnlineSource(src);
+      setOnlineCache(updated);
+      const rec = updated[src.id];
+      if (rec?.status === 'ok') {
+        onShowToast(`«${src.name}» обновлён (${rec.entries.length} записей).`);
+      } else {
+        onShowToast(rec?.error || `Не удалось обновить «${src.name}».`);
+      }
+    } finally {
+      setSyncingSourceId(null);
+    }
+  };
+
+  const addAndFetchSource = async (name: string, url: string, kind: KnowledgeSource['kind'], fixedId?: string) => {
+    const nextSrc: KnowledgeSource = {
+      id: fixedId || `src-custom-${uid()}`,
+      name,
+      url,
+      kind,
+      enabled: true,
+      isDefault: false,
+    };
+    const nextSources = [...knowledgeBase.sources, nextSrc];
+    onChangeKnowledgeBase({
+      ...knowledgeBase,
+      onlineSearchEnabled: true,
+      autoSyncOnLaunch: true,
+      sources: nextSources,
+    });
+    setSyncingSourceId(nextSrc.id);
+    try {
+      const updated = await syncSingleOnlineSource(nextSrc);
+      setOnlineCache(updated);
+      const rec = updated[nextSrc.id];
+      if (rec?.status === 'ok') {
+        onShowToast(`Источник «${name}» добавлен и загружен (${rec.entries.length} записей).`);
+      } else {
+        onShowToast(`Источник «${name}» добавлен. ${rec?.error || 'Обновится при следующем запуске.'}`);
+      }
+    } finally {
+      setSyncingSourceId(null);
+    }
+  };
+
+  const handleAddCustomSource = async () => {
     setSourceUrlError(null);
     const check = validateSafeSourceUrl(newSourceUrl);
     if (!check.ok) {
       setSourceUrlError(check.error);
       return;
     }
+    if (knowledgeBase.sources.some((s) => s.url === check.url)) {
+      setSourceUrlError('Эта ссылка уже есть в списке доверенных источников.');
+      return;
+    }
     const label = newSourceName.trim() || new URL(check.url).hostname;
-    const nextSrc: KnowledgeSource = {
-      id: `src-custom-${uid()}`,
-      name: label,
-      url: check.url,
-      kind: check.inferredKind,
-      enabled: true,
-      isDefault: false,
-    };
-    onChangeKnowledgeBase({
-      ...knowledgeBase,
-      sources: [...knowledgeBase.sources, nextSrc],
-    });
     setNewSourceName('');
     setNewSourceUrl('');
-    onShowToast(`Источник «${label}» добавлен.`);
+    setShowAddSourceForm(false);
+    await addAndFetchSource(label, check.url, check.inferredKind);
+  };
+
+  const handleAddPresetSource = async (preset: (typeof PRESET_TRUSTED_SOURCES)[number]) => {
+    if (knowledgeBase.sources.some((s) => s.url === preset.url)) {
+      onShowToast('Этот источник уже подключён.');
+      return;
+    }
+    await addAndFetchSource(preset.name, preset.url, preset.kind, preset.id);
   };
 
   const handleToggleSource = (id: string, enabled: boolean) => {
@@ -447,6 +716,13 @@ export default function AppSettingsModal({
       themeStyle: settings.themeStyle,
       aiMode: settings.aiMode,
       localModelId: settings.localModelId,
+      aiCloudProvider: settings.aiCloudProvider,
+      aiResponseStyle: settings.aiResponseStyle,
+      aiStrictMode: settings.aiStrictMode,
+      aiHistoryTurns: settings.aiHistoryTurns,
+      aiIncludeFinanceContext: settings.aiIncludeFinanceContext,
+      aiUseKnowledgeBase: settings.aiUseKnowledgeBase,
+      aiCustomInstruction: settings.aiCustomInstruction,
     });
     onShowToast('Все разделы и блоки возвращены по умолчанию.');
   };
@@ -496,31 +772,43 @@ export default function AppSettingsModal({
         </div>
       )}
 
-      {/* Переключатель вкладок настроек */}
-      <div className="grid grid-cols-2 gap-1.5 p-1 rounded-2xl bg-[var(--fld)] border border-[var(--line)]">
+      {/* Переключатель 3 вкладок настроек */}
+      <div className="grid grid-cols-3 gap-1 p-1 rounded-2xl bg-[var(--fld)] border border-[var(--line)]">
         <button
           type="button"
           onClick={() => setInnerTab('layout')}
-          className={`py-2 px-3 rounded-xl text-xs font-extrabold flex items-center justify-center gap-1.5 cursor-pointer transition ${
+          className={`py-2 px-2 rounded-xl text-[11px] font-extrabold flex items-center justify-center gap-1 cursor-pointer transition ${
             innerTab === 'layout'
               ? 'bg-white/[0.14] text-white shadow-sm'
               : 'text-[var(--mute)] hover:text-white'
           }`}
         >
-          <LayoutGrid className="w-3.5 h-3.5" />
-          <span>Блоки и разделы</span>
+          <LayoutGrid className="w-3.5 h-3.5 shrink-0" />
+          <span className="truncate">Блоки и вид</span>
         </button>
         <button
           type="button"
           onClick={() => setInnerTab('ai')}
-          className={`py-2 px-3 rounded-xl text-xs font-extrabold flex items-center justify-center gap-1.5 cursor-pointer transition ${
+          className={`py-2 px-2 rounded-xl text-[11px] font-extrabold flex items-center justify-center gap-1 cursor-pointer transition ${
             innerTab === 'ai'
               ? 'bg-[#7A68E6]/35 text-white border border-[#8B7AF0]/40'
               : 'text-[var(--mute)] hover:text-white'
           }`}
         >
-          <Bot className="w-3.5 h-3.5" />
-          <span>ИИ и Приватность</span>
+          <Bot className="w-3.5 h-3.5 shrink-0" />
+          <span className="truncate">Движок и API</span>
+        </button>
+        <button
+          type="button"
+          onClick={() => setInnerTab('kb')}
+          className={`py-2 px-2 rounded-xl text-[11px] font-extrabold flex items-center justify-center gap-1 cursor-pointer transition ${
+            innerTab === 'kb'
+              ? 'bg-emerald-500/25 text-white border border-emerald-400/45'
+              : 'text-[var(--mute)] hover:text-white'
+          }`}
+        >
+          <BookOpen className="w-3.5 h-3.5 shrink-0" />
+          <span className="truncate">Обучение ИИ</span>
         </button>
       </div>
 
@@ -692,7 +980,7 @@ export default function AppSettingsModal({
             <span>Вернуть все блоки по умолчанию</span>
           </button>
         </div>
-      ) : (
+      ) : innerTab === 'ai' ? (
         <div className="space-y-3">
           {/* Главный тумблер чата ИИ */}
           <div className="rounded-2xl bg-[var(--fld)] border border-[var(--line)] p-3 space-y-2.5">
@@ -733,31 +1021,31 @@ export default function AppSettingsModal({
           {/* Выбор режима работы ИИ */}
           <div className="space-y-2">
             <div className="text-xs font-extrabold text-white px-0.5">
-              Режим работы ИИ-Советника
+              Движок ИИ-Советника
             </div>
 
             {/* 1. Офлайн-Советник (0 МБ) */}
             <button
               type="button"
-              onClick={() => setAiMode('offline')}
+              onClick={() => void setAiMode('offline')}
               className={`w-full text-left rounded-2xl p-3 border transition cursor-pointer ${
                 settings.aiMode === 'offline'
                   ? 'bg-emerald-500/15 border-emerald-400/60'
                   : 'bg-[var(--fld)] border-[var(--line)] hover:border-white/25'
               }`}
             >
-              <div className="flex items-center justify-between gap-2">
+              <div className="flex items-center justify-between gap-2 flex-wrap">
                 <div className="flex items-center gap-2 font-extrabold text-xs text-white">
                   <Lock className="w-4 h-4 text-emerald-400 shrink-0" />
                   <span>Встроенный локальный ИИ-аналитик (0 МБ)</span>
                 </div>
-                <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300">
-                  По умолчанию · 100% приватно
+                <span className="text-[10px] font-bold text-emerald-300">
+                  По умолчанию · 100% офлайн
                 </span>
               </div>
               <div className="fin-sub mt-1">
-                Мгновенный анализ бюджета, расходов, вкладов, ОФЗ, акций, вычета 13% по ИИС и
-                подушки безопасности прямо на устройстве без интернета и без сбоев видеопамяти.
+                Мгновенный расчёт бюджета, вкладов, ОФЗ, вычета 13% по ИИС + поиск по вашим выжимкам
+                и кэшу доверенных источников без нагрузки на видеопамять.
               </div>
             </button>
 
@@ -771,21 +1059,21 @@ export default function AppSettingsModal({
             >
               <button
                 type="button"
-                onClick={() => setAiMode('local-llm')}
+                onClick={() => void setAiMode('local-llm')}
                 className="w-full text-left cursor-pointer"
               >
-                <div className="flex items-center justify-between gap-2">
+                <div className="flex items-center justify-between gap-2 flex-wrap">
                   <div className="flex items-center gap-2 font-extrabold text-xs text-white">
                     <Cpu className="w-4 h-4 text-cyan-300 shrink-0" />
-                    <span>Локальная нейросеть на телефоне</span>
+                    <span>Локальная нейросеть на устройстве (WebLLM)</span>
                   </div>
-                  <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-cyan-500/20 text-cyan-200">
-                    Офлайн-ИИ
+                  <span className="text-[10px] font-bold text-cyan-200">
+                    Офлайн-нейросеть
                   </span>
                 </div>
                 <div className="fin-sub mt-1">
-                  Компактная нейросеть скачивается один раз в кэш браузера (лучше по Wi-Fi), а затем
-                  отвечает на вопросы полностью без интернета и без отправки данных наружу.
+                  Скачивается 1 раз в кэш браузера, использует ваши выжимки и доверенные источники,
+                  отвечает свободным текстом без отправки данных в интернет.
                 </div>
               </button>
 
@@ -802,7 +1090,7 @@ export default function AppSettingsModal({
                     <span>
                       {webGpuOk
                         ? 'WebGPU поддерживается этим браузером — можно загрузить локальную модель.'
-                        : 'WebGPU в этом браузере не обнаружен. Для локальной нейросети нужен Chrome (Android/ПК) или Safari с WebGPU. Либо выберите «Офлайн-Советник (0 МБ)».'}
+                        : 'WebGPU не обнаружен. Нужен Chrome (Android/ПК) или Safari с WebGPU, либо режим «Офлайн-аналитик (0 МБ)».'}
                     </span>
                   </div>
 
@@ -824,8 +1112,8 @@ export default function AppSettingsModal({
                         >
                           <div className="flex items-center justify-between gap-2 text-xs font-extrabold text-white">
                             <span>{m.name}</span>
-                            <div className="flex items-center gap-1.5">
-                              <span className="text-[10px] font-bold text-cyan-200 bg-cyan-500/20 px-1.5 py-0.5 rounded-md">
+                            <div className="flex items-center gap-1.5 shrink-0">
+                              <span className="text-[10px] font-bold text-cyan-200">
                                 {m.sizeLabel}
                               </span>
                               {isLoaded && (
@@ -909,7 +1197,7 @@ export default function AppSettingsModal({
               )}
             </div>
 
-            {/* 3. Облачный ИИ-Советник (серверный Gemini) */}
+            {/* 3. Облачный API (серверный шлюз Gemini / OpenAI-compatible) */}
             <div
               className={`rounded-2xl p-3 border transition space-y-2.5 ${
                 settings.aiMode === 'cloud'
@@ -919,126 +1207,389 @@ export default function AppSettingsModal({
             >
               <button
                 type="button"
-                onClick={() => setAiMode('cloud')}
+                onClick={() => void setAiMode('cloud')}
                 className="w-full text-left cursor-pointer"
               >
-                <div className="flex items-center justify-between gap-2">
+                <div className="flex items-center justify-between gap-2 flex-wrap">
                   <div className="flex items-center gap-2 font-extrabold text-xs text-white">
                     <Cloud className="w-4 h-4 text-[#9B8AFB] shrink-0" />
-                    <span>Облачный ИИ-Советник (онлайн)</span>
+                    <span>Облачный API (серверный шлюз)</span>
                   </div>
-                  <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-[#7A68E6]/30 text-violet-200">
-                    Интернет
+                  <span className="text-[10px] font-bold text-violet-200">
+                    Gemini / OpenAI API
                   </span>
                 </div>
                 <div className="fin-sub mt-1">
-                  Точные ответы через защищённый серверный шлюз (поддерживаются Gemini и
-                  OpenAI-совместимые серверы через переменные окружения на сервере — ключи никогда
-                  не вводятся и не хранятся в браузере).
+                  Мощные ответы через защищённый серверный API с учётом вашей Базы знаний и
+                  доверенных ссылок. Ключи хранятся только на сервере (Settings → Secrets).
                 </div>
               </button>
 
               {settings.aiMode === 'cloud' && (
-                <div className="rounded-xl bg-amber-500/12 border border-amber-400/40 p-2.5 space-y-1.5">
-                  {typeof window !== 'undefined' &&
-                    /\.github\.io$|\.pages\.dev$|\.netlify\.app$/i.test(window.location.hostname) && (
-                      <p className="text-[11px] leading-relaxed text-amber-200 font-semibold">
-                        ℹ️ На GitHub Pages нет серверного бэкенда для облачного ИИ — ответы будут
-                        автоматически рассчитываться встроенным Офлайн-Советником. Рекомендуем
-                        выбрать «Офлайн-Советник (0 МБ)» или «Локальную нейросеть (Adreno / f32)».
-                      </p>
+                <div className="space-y-2.5 pt-2 border-t border-white/10">
+                  {/* Статус подключения к серверному API */}
+                  <div className="rounded-xl bg-black/25 border border-white/10 p-2.5 space-y-2">
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="flex items-center gap-1.5 text-xs font-bold text-white">
+                        {apiStatus.loading ? (
+                          <Loader2 className="w-3.5 h-3.5 animate-spin text-violet-300" />
+                        ) : apiStatus.reachable && (apiStatus.geminiAvailable || apiStatus.openaiAvailable) ? (
+                          <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
+                        ) : (
+                          <AlertTriangle className="w-3.5 h-3.5 text-amber-300" />
+                        )}
+                        <span>
+                          {apiStatus.loading
+                            ? 'Проверка серверного API...'
+                            : !apiStatus.reachable
+                            ? 'Сервер API не обнаружен (статический режим)'
+                            : apiStatus.geminiAvailable || apiStatus.openaiAvailable
+                            ? 'Серверный API подключён'
+                            : 'Сервер работает, но ключ API не задан'}
+                        </span>
+                      </div>
+                      <button
+                        type="button"
+                        disabled={apiStatus.loading}
+                        onClick={() => void checkServerApiStatus(false)}
+                        className="px-2 py-1 rounded-lg bg-white/10 hover:bg-white/15 text-[11px] font-bold text-slate-200 cursor-pointer flex items-center gap-1"
+                      >
+                        <RefreshCw className={`w-3 h-3 ${apiStatus.loading ? 'animate-spin' : ''}`} />
+                        <span>Проверить</span>
+                      </button>
+                    </div>
+
+                    {apiStatus.reachable && (
+                      <div className="text-[11px] text-slate-300 space-y-0.5">
+                        <div>
+                          • Gemini API: {apiStatus.geminiAvailable ? 'активен на сервере' : 'не задан (Settings → Secrets)'}
+                        </div>
+                        <div>
+                          • OpenAI-совместимый шлюз:{' '}
+                          {apiStatus.openaiAvailable
+                            ? `активен (${apiStatus.openaiModel || 'gpt-4o-mini'})`
+                            : 'не задан (опционально в переменных сервера)'}
+                        </div>
+                      </div>
                     )}
-                  <div className="flex items-center gap-1.5 text-xs font-extrabold text-amber-200">
-                    <AlertTriangle className="w-4 h-4 shrink-0 text-amber-300" />
-                    <span>Предупреждение о конфиденциальности</span>
+
+                    {/* Выбор провайдера / модели API */}
+                    <div className="space-y-1 pt-1">
+                      <div className="text-[11px] font-bold text-slate-300">Модель серверного API:</div>
+                      <div className="grid grid-cols-2 gap-1.5">
+                        {(
+                          [
+                            { id: 'auto', label: 'Автовыбор', sub: 'Gemini → OpenAI' },
+                            { id: 'gemini-flash', label: 'Gemini 4 Flash', sub: 'Точный и быстрый' },
+                            { id: 'gemini-lite', label: 'Gemini 3.1 Lite', sub: 'Максимальная скорость' },
+                            { id: 'openai', label: 'OpenAI шлюз', sub: 'Серверный OPENAI_API' },
+                          ] as { id: AiCloudProvider; label: string; sub: string }[]
+                        ).map((opt) => {
+                          const active = (settings.aiCloudProvider || 'auto') === opt.id;
+                          return (
+                            <button
+                              key={opt.id}
+                              type="button"
+                              onClick={() => onChange({ ...settings, aiCloudProvider: opt.id })}
+                              className={`text-left px-2.5 py-2 rounded-xl border transition cursor-pointer ${
+                                active
+                                  ? 'bg-[#7A68E6]/25 border-[#9B8AFB]/70 text-white'
+                                  : 'bg-black/25 border-white/10 text-slate-300 hover:border-white/25'
+                              }`}
+                            >
+                              <div className="text-[11px] font-extrabold leading-tight">{opt.label}</div>
+                              <div className="text-[10px] text-slate-400 mt-0.5">{opt.sub}</div>
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
                   </div>
-                  <p className="text-[11px] leading-relaxed text-amber-100/90">
-                    При использовании облачного ИИ ваши вопросы (и голосовые записи при диктовке),
-                    а также агрегированная сводка бюджета за выбранный период (суммы доходов,
-                    расходов, категорий и вкладов) передаются через интернет на внешний сервер ИИ
-                    для формирования ответа.
-                  </p>
-                  <p className="text-[11px] leading-relaxed text-amber-100/80">
-                    ПИН-код и фотографии чеков <b>не отправляются</b>, однако при любом выходе в
-                    сеть сохраняется риск обработки данных сторонним облачным сервисом. Для полной
-                    автономности без передачи данных переключитесь на{' '}
-                    <b>«Офлайн-Советник (0 МБ)»</b> или <b>«Локальную нейросеть на телефоне»</b>.
-                  </p>
+
+                  {/* Предупреждение о приватности и статическом хостинге */}
+                  <div className="rounded-xl bg-amber-500/12 border border-amber-400/35 p-2.5 space-y-1.5">
+                    {typeof window !== 'undefined' &&
+                      /\.github\.io$|\.pages\.dev$|\.netlify\.app$/i.test(window.location.hostname) && (
+                        <p className="text-[11px] leading-relaxed text-amber-200 font-semibold">
+                          ℹ️ На GitHub Pages нет Node.js-сервера для облачного API — ответы будут
+                          автоматически выполняться встроенным Офлайн-аналитиком. Для облачного API
+                          открывайте приложение на сервере с настроенным ключом в Settings → Secrets.
+                        </p>
+                      )}
+                    <div className="flex items-center gap-1.5 text-xs font-extrabold text-amber-200">
+                      <AlertTriangle className="w-4 h-4 shrink-0 text-amber-300" />
+                      <span>Конфиденциальность облачного API</span>
+                    </div>
+                    <p className="text-[11px] leading-relaxed text-amber-100/90">
+                      При включённой передаче сводки в облако отправляются вопрос, найденные фрагменты
+                      Базы знаний и агрегированные суммы за период. ПИН-код и фото чеков{' '}
+                      <b>никогда не отправляются</b>. Вы можете отключить передачу сводки ниже.
+                    </p>
+                  </div>
                 </div>
               )}
             </div>
           </div>
 
-          {/* НОВЫЙ БЛОК: БАЗА ЗНАНИЙ И ИСТОЧНИКИ (ОБУЧЕНИЕ ИИ) */}
-          <div className="rounded-2xl bg-[var(--fld)] border border-emerald-400/30 p-3 space-y-3">
-            <div className="flex items-center justify-between gap-2">
+          {/* ДЕТАЛЬНЫЕ НАСТРОЙКИ ПОВЕДЕНИЯ ИИ (для всех режимов) */}
+          <div className="rounded-2xl bg-[var(--fld)] border border-[var(--line)] p-3 space-y-3">
+            <div className="flex items-center gap-2 text-xs font-extrabold text-white">
+              <SlidersHorizontal className="w-4 h-4 text-[#9B8AFB] shrink-0" />
+              <span>Детальные настройки поведения ИИ</span>
+            </div>
+
+            {/* Стиль ответов */}
+            <div className="space-y-1.5">
+              <div className="text-[11px] font-bold text-slate-300">Формат и глубина ответов</div>
+              <div className="grid grid-cols-3 gap-1.5">
+                {(
+                  [
+                    { id: 'concise', label: 'Кратко', sub: '3–5 пунктов' },
+                    { id: 'balanced', label: 'Баланс', sub: 'Оптимально' },
+                    { id: 'detailed', label: 'Подробно', sub: 'С расчётами' },
+                  ] as { id: AiResponseStyle; label: string; sub: string }[]
+                ).map((st) => {
+                  const active = (settings.aiResponseStyle || 'balanced') === st.id;
+                  return (
+                    <button
+                      key={st.id}
+                      type="button"
+                      onClick={() => onChange({ ...settings, aiResponseStyle: st.id })}
+                      className={`py-2 px-2 rounded-xl border text-center cursor-pointer transition ${
+                        active
+                          ? 'bg-emerald-500/18 border-emerald-400/60 text-white'
+                          : 'bg-black/20 border-white/10 text-slate-300 hover:border-white/25'
+                      }`}
+                    >
+                      <div className="text-[11px] font-extrabold">{st.label}</div>
+                      <div className="text-[10px] text-slate-400">{st.sub}</div>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            {/* Глубина памяти диалога */}
+            <div className="flex items-center justify-between gap-2 pt-2 border-t border-white/10">
+              <div>
+                <div className="text-xs font-bold text-slate-100">Память диалога</div>
+                <div className="fin-sub">Сколько последних реплик учитывать</div>
+              </div>
+              <div className="flex gap-1">
+                {[2, 4, 6].map((turns) => (
+                  <button
+                    key={turns}
+                    type="button"
+                    onClick={() => onChange({ ...settings, aiHistoryTurns: turns })}
+                    className={`w-8 h-8 rounded-lg text-xs font-extrabold border cursor-pointer transition ${
+                      (settings.aiHistoryTurns || 4) === turns
+                        ? 'bg-emerald-500/20 border-emerald-400/60 text-white'
+                        : 'bg-black/25 border-white/10 text-slate-300 hover:border-white/25'
+                    }`}
+                  >
+                    {turns}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* Тумблеры контекста и строгости */}
+            <div className="space-y-2.5 pt-2 border-t border-white/10">
+              <div className="flex items-center justify-between gap-2 text-xs">
+                <div>
+                  <div className="font-bold text-slate-100">Строго по фактам и Базе знаний</div>
+                  <div className="fin-sub">Запрещает выдумывать цифры и законы без источников</div>
+                </div>
+                <ToggleSwitch
+                  checked={settings.aiStrictMode !== false}
+                  onChange={(v) => onChange({ ...settings, aiStrictMode: v })}
+                  label="Строгий режим по фактам"
+                />
+              </div>
+
+              <div className="flex items-center justify-between gap-2 text-xs">
+                <div>
+                  <div className="font-bold text-slate-100">Передавать сводку бюджета и ИИС</div>
+                  <div className="fin-sub">Учитывать ваши реальные доходы, траты и активы</div>
+                </div>
+                <ToggleSwitch
+                  checked={settings.aiIncludeFinanceContext !== false}
+                  onChange={(v) => onChange({ ...settings, aiIncludeFinanceContext: v })}
+                  label="Передавать финансовую сводку"
+                />
+              </div>
+
+              <div className="flex items-center justify-between gap-2 text-xs">
+                <div>
+                  <div className="font-bold text-slate-100">Подключать Базу знаний и ссылки</div>
+                  <div className="fin-sub">Искать ответы в выжимках и доверенных источниках</div>
+                </div>
+                <ToggleSwitch
+                  checked={settings.aiUseKnowledgeBase !== false}
+                  onChange={(v) => onChange({ ...settings, aiUseKnowledgeBase: v })}
+                  label="Подключать Базу знаний"
+                />
+              </div>
+            </div>
+
+            {/* Персональная инструкция для ИИ */}
+            <div className="space-y-1.5 pt-2 border-t border-white/10">
+              <div className="flex items-center justify-between text-[11px]">
+                <span className="font-bold text-slate-200">Персональная инструкция для ИИ</span>
+                <span className="text-slate-400 tabular-nums">
+                  {(settings.aiCustomInstruction || '').length}/800
+                </span>
+              </div>
+              <textarea
+                rows={2}
+                maxLength={800}
+                value={settings.aiCustomInstruction || ''}
+                onChange={(e) => onChange({ ...settings, aiCustomInstruction: e.target.value })}
+                placeholder="Например: Всегда оценивай траты с точки зрения накопления на подушку 300 000 ₽ и сравнивай вклады с ОФЗ..."
+                className="fin-input w-full text-xs resize-y"
+              />
+            </div>
+          </div>
+
+          <button
+            type="button"
+            onClick={() => setInnerTab('kb')}
+            className="fin-btn ghost w-full flex items-center justify-center gap-2 text-emerald-200 border-emerald-400/35"
+          >
+            <BookOpen className="w-4 h-4" />
+            <span>Перейти к обучению ИИ, выжимкам и ссылкам →</span>
+          </button>
+        </div>
+      ) : (
+        <div className="space-y-3">
+          {/* Краткая памятка «Как обучать ИИ» */}
+          <div className="rounded-2xl bg-emerald-500/10 border border-emerald-400/30 p-3 space-y-1.5">
+            <div className="flex items-center gap-1.5 text-xs font-extrabold text-emerald-200">
+              <Sparkles className="w-4 h-4 shrink-0" />
+              <span>Как обучать ИИ-Советника</span>
+            </div>
+            <div className="text-[11px] text-slate-200 leading-relaxed space-y-1">
+              <div>
+                <b>1. Выжимки и файлы:</b> вставляйте тексты или загружайте <b>.txt / .md / .csv</b> —
+                они сохраняются локально и сразу работают даже без интернета.
+              </div>
+              <div>
+                <b>2. Доверенные ссылки:</b> добавляйте открытые источники (ЦБ РФ, Мосбиржа, RSS,
+                справочные страницы) — приложение само обновляет их при каждом запуске.
+              </div>
+              <div>
+                <b>3. Применение везде:</b> выжимки и свежий кэш ссылок используются и в Офлайн-аналитике,
+                и в локальной нейросети, и в Облачном API.
+              </div>
+            </div>
+          </div>
+
+          {/* БЛОК 1: ВЫЖИМКИ И ФАЙЛЫ ДЛЯ ЛОКАЛЬНОГО ИИ */}
+          <div className="rounded-2xl bg-[var(--fld)] border border-[var(--line)] p-3 space-y-2.5">
+            <div className="flex items-center justify-between gap-2 flex-wrap">
               <div className="flex items-center gap-2 font-extrabold text-xs text-white">
                 <BookOpen className="w-4 h-4 text-emerald-400 shrink-0" />
-                <span>База знаний ассистента (выжимки и источники)</span>
+                <span>Выжимки для локального ИИ ({knowledgeBase.rules.length})</span>
               </div>
-              <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 shrink-0">
-                {knowledgeBase.rules.length} правил
-              </span>
+              <div className="flex items-center gap-1">
+                <button
+                  type="button"
+                  onClick={handleInsertSampleTemplate}
+                  className="px-2 py-1 rounded-lg bg-white/[0.06] hover:bg-white/[0.12] border border-white/10 text-[10px] font-bold text-slate-200 cursor-pointer transition"
+                  title="Подставить шаблон для редактирования"
+                >
+                  Шаблон
+                </button>
+                <button
+                  type="button"
+                  onClick={handleExportKnowledgeBase}
+                  className="px-2 py-1 rounded-lg bg-white/[0.06] hover:bg-white/[0.12] border border-white/10 text-[10px] font-bold text-slate-200 cursor-pointer transition"
+                  title="Сохранить Базу знаний в JSON"
+                >
+                  Экспорт
+                </button>
+                <button
+                  type="button"
+                  onClick={() => importKbInputRef.current?.click()}
+                  className="px-2 py-1 rounded-lg bg-white/[0.06] hover:bg-white/[0.12] border border-white/10 text-[10px] font-bold text-slate-200 cursor-pointer transition"
+                  title="Загрузить Базу знаний из JSON"
+                >
+                  Импорт
+                </button>
+                <input
+                  ref={importKbInputRef}
+                  type="file"
+                  accept=".json,application/json"
+                  onChange={(e) => void handleImportKnowledgeBase(e)}
+                  className="hidden"
+                />
+              </div>
             </div>
 
-            <div className="fin-sub">
-              Добавляйте свои выжимки из законов (например, лимиты вычетов ИИС-3, НДФЛ 13%, правила
-              вкладов) или загрузите файл <b>.txt / .md</b>. Всё хранится локально в IndexedDB.
-            </div>
-
-            {/* а) Добавление правила / выжимки + загрузка .txt / .md */}
             <div className="space-y-2">
               <input
                 type="text"
                 value={ruleTitle}
                 onChange={(e) => setRuleTitle(e.target.value)}
-                placeholder="Название правила (например: Лимиты ИИС-3 и НДФЛ 13%)"
+                placeholder="Тема выжимки (например: Лимиты ИИС-3, НДФЛ 13%, условия вклада)"
                 className="fin-input w-full text-xs"
               />
               <textarea
                 rows={3}
                 value={ruleText}
                 onChange={(e) => setRuleText(e.target.value)}
-                placeholder="Вставьте выжимку из закона, лимиты, заметку или справочный текст..."
+                placeholder="Вставьте выжимку из закона, лимиты, тарифы банка или свои правила для ИИ..."
                 className="fin-input w-full text-xs resize-y"
               />
               <div className="flex gap-1.5 flex-wrap">
                 <button
                   type="button"
-                  onClick={handleAddRule}
+                  onClick={handleAddOrSaveRule}
                   className="fin-btn sm flex-1 flex items-center justify-center gap-1.5"
                 >
                   <Plus className="w-3.5 h-3.5" />
-                  <span>Добавить правило / выжимку</span>
+                  <span>{editingRuleId !== null ? 'Сохранить изменения' : 'Добавить выжимку'}</span>
                 </button>
+                {editingRuleId !== null && (
+                  <button
+                    type="button"
+                    onClick={handleCancelEditRule}
+                    className="fin-btn ghost sm"
+                  >
+                    Отмена
+                  </button>
+                )}
                 <button
                   type="button"
                   onClick={() => fileInputRef.current?.click()}
                   className="fin-btn ghost sm flex items-center justify-center gap-1.5"
                 >
                   <Upload className="w-3.5 h-3.5" />
-                  <span>.txt / .md</span>
+                  <span>Загрузить .txt / .md</span>
                 </button>
                 <input
                   ref={fileInputRef}
                   type="file"
-                  accept=".txt,.md,text/plain,text/markdown"
-                  onChange={handleUploadRuleFile}
+                  multiple
+                  accept=".txt,.md,.csv,text/plain,text/markdown,text/csv"
+                  onChange={(e) => void handleUploadRuleFiles(e)}
                   className="hidden"
                 />
               </div>
             </div>
 
             {/* Список сохранённых выжимок */}
-            {knowledgeBase.rules.length > 0 && (
-              <div className="space-y-1.5 max-h-48 overflow-y-auto pr-0.5">
+            {knowledgeBase.rules.length > 0 ? (
+              <div className="space-y-1.5 max-h-52 overflow-y-auto pr-0.5 pt-1">
                 {knowledgeBase.rules.map((rule) => (
                   <div
                     key={rule.id}
-                    className="rounded-xl bg-black/25 border border-white/10 p-2.5 flex items-start justify-between gap-2"
+                    className={`rounded-xl bg-black/25 border p-2.5 flex items-start justify-between gap-2 ${
+                      editingRuleId === rule.id ? 'border-emerald-400/60' : 'border-white/10'
+                    }`}
                   >
                     <div className="min-w-0 flex-1">
-                      <div className="flex items-center gap-1.5 text-xs font-bold text-white truncate">
+                      <div className="flex items-center gap-1.5 text-xs font-bold text-white">
                         <FileText className="w-3.5 h-3.5 text-emerald-300 shrink-0" />
                         <span className="truncate">{rule.title}</span>
                       </div>
@@ -1046,146 +1597,247 @@ export default function AppSettingsModal({
                         {rule.content}
                       </div>
                     </div>
-                    <button
-                      type="button"
-                      onClick={() => handleDeleteRule(rule.id)}
-                      className="p-1.5 rounded-lg text-rose-300 hover:bg-rose-500/15 cursor-pointer shrink-0"
-                      title="Удалить выжимку"
-                    >
-                      <Trash2 className="w-3.5 h-3.5" />
-                    </button>
+                    <div className="flex items-center gap-0.5 shrink-0">
+                      <button
+                        type="button"
+                        onClick={() => handleStartEditRule(rule)}
+                        className="p-1.5 rounded-lg text-slate-300 hover:bg-white/10 cursor-pointer"
+                        title="Редактировать выжимку"
+                      >
+                        <Edit3 className="w-3.5 h-3.5" />
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleDeleteRule(rule.id)}
+                        className="p-1.5 rounded-lg text-rose-300 hover:bg-rose-500/15 cursor-pointer"
+                        title="Удалить выжимку"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
                   </div>
                 ))}
               </div>
+            ) : (
+              <div className="text-[11px] text-slate-400 text-center py-2 border border-dashed border-white/10 rounded-xl">
+                Выжимок пока нет — добавьте первую заметку или загрузите файл .txt / .md.
+              </div>
+            )}
+          </div>
+
+          {/* БЛОК 2: ДОВЕРЕННЫЕ ССЫЛКИ С АВТООБНОВЛЕНИЕМ ПРИ КАЖДОМ ЗАПУСКЕ */}
+          <div className="rounded-2xl bg-[var(--fld)] border border-cyan-400/30 p-3 space-y-2.5">
+            <div className="flex items-center justify-between gap-2">
+              <div className="min-w-0">
+                <div className="flex items-center gap-1.5 text-xs font-extrabold text-white">
+                  <Globe className="w-4 h-4 text-cyan-300 shrink-0" />
+                  <span>Доверенные онлайн-источники</span>
+                </div>
+                <div className="fin-sub">
+                  ИИ опирается на свежие данные с указанных вами сайтов и API
+                </div>
+              </div>
+              <ToggleSwitch
+                checked={knowledgeBase.onlineSearchEnabled}
+                onChange={(v) => void handleToggleOnlineSearch(v)}
+                label="Включить доверенные онлайн-источники"
+              />
+            </div>
+
+            <div className="flex items-center justify-between gap-2 pt-2 border-t border-white/10 text-xs">
+              <div className="min-w-0">
+                <div className="font-bold text-slate-100">Обновлять при каждом запуске</div>
+                <div className="fin-sub">
+                  Свежая загрузка включённых ссылок при открытии приложения
+                  {knowledgeBase.lastAutoSyncAt
+                    ? ` · обновлено в ${new Date(knowledgeBase.lastAutoSyncAt).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' })}`
+                    : ''}
+                </div>
+              </div>
+              <ToggleSwitch
+                checked={knowledgeBase.autoSyncOnLaunch !== false}
+                disabled={!knowledgeBase.onlineSearchEnabled}
+                onChange={(v) =>
+                  onChangeKnowledgeBase({
+                    ...knowledgeBase,
+                    autoSyncOnLaunch: v,
+                  })
+                }
+                label="Обновлять при каждом запуске"
+              />
+            </div>
+
+            <div className="rounded-xl bg-emerald-500/10 border border-emerald-400/25 px-2.5 py-2 text-[11px] text-emerald-100/90 leading-snug flex items-start gap-2">
+              <ShieldCheck className="w-4 h-4 text-emerald-300 shrink-0 mt-0.5" />
+              <span>
+                <b>Безопасная загрузка:</b> ваши вопросы, суммы и активы <b>не передаются</b> на эти
+                сайты. Программа лишь скачивает открытую ленту в локальный кэш, очищает HTML и ищет
+                нужные факты у вас на устройстве.
+              </span>
+            </div>
+
+            {/* Главная кнопка добавления доверенной ссылки + кнопка обновления */}
+            <div className="flex gap-1.5 flex-wrap">
+              <button
+                type="button"
+                onClick={() => {
+                  setShowAddSourceForm((v) => !v);
+                  window.setTimeout(() => sourceUrlInputRef.current?.focus(), 60);
+                }}
+                className="fin-btn sm flex-1 flex items-center justify-center gap-1.5"
+              >
+                <Link2 className="w-3.5 h-3.5" />
+                <span>+ Добавить доверенную ссылку</span>
+              </button>
+              <button
+                type="button"
+                disabled={syncingSources || !knowledgeBase.onlineSearchEnabled}
+                onClick={() => void handleRefreshOnlineSources()}
+                className="fin-btn ghost sm flex items-center justify-center gap-1.5 disabled:opacity-45"
+              >
+                <RefreshCw className={`w-3.5 h-3.5 ${syncingSources ? 'animate-spin' : ''}`} />
+                <span>{syncingSources ? 'Загрузка...' : 'Обновить все'}</span>
+              </button>
+            </div>
+
+            {/* Форма добавления доверенной ссылки */}
+            {showAddSourceForm && (
+              <div className="rounded-xl bg-black/30 border border-cyan-400/40 p-2.5 space-y-2">
+                <div className="text-[11px] font-bold text-cyan-200">
+                  Новая доверенная ссылка (HTTPS — RSS, JSON, API или статья)
+                </div>
+                <input
+                  type="text"
+                  value={newSourceName}
+                  onChange={(e) => setNewSourceName(e.target.value)}
+                  placeholder="Название (например: Курсы ЦБ РФ, Блог брокера, Новости)"
+                  className="fin-input w-full text-xs"
+                />
+                <input
+                  ref={sourceUrlInputRef}
+                  type="url"
+                  value={newSourceUrl}
+                  onChange={(e) => {
+                    setNewSourceUrl(e.target.value);
+                    setSourceUrlError(null);
+                  }}
+                  placeholder="https://..."
+                  className="fin-input w-full text-xs"
+                />
+                {sourceUrlError && (
+                  <div className="text-[11px] text-rose-300">{sourceUrlError}</div>
+                )}
+                <div className="flex gap-1.5">
+                  <button
+                    type="button"
+                    onClick={() => void handleAddCustomSource()}
+                    className="fin-btn sm flex-1 flex items-center justify-center gap-1"
+                  >
+                    <Plus className="w-3.5 h-3.5" />
+                    <span>Сохранить и загрузить</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setShowAddSourceForm(false);
+                      setSourceUrlError(null);
+                    }}
+                    className="fin-btn ghost sm"
+                  >
+                    Отмена
+                  </button>
+                </div>
+              </div>
             )}
 
-            {/* б) Онлайн-ресурсы и тумблер приватности */}
-            <div className="pt-2.5 border-t border-white/10 space-y-2.5">
-              <div className="flex items-center justify-between gap-2">
-                <div className="min-w-0">
-                  <div className="flex items-center gap-1.5 text-xs font-extrabold text-white">
-                    <Globe className="w-3.5 h-3.5 text-cyan-300 shrink-0" />
-                    <span>Разрешить поиск в онлайн-источниках</span>
-                  </div>
-                  <div className="fin-sub">
-                    По умолчанию выключено (100% офлайн). При включении скачиваются только публичные
-                    ленты и котировки.
-                  </div>
-                </div>
-                <ToggleSwitch
-                  checked={knowledgeBase.onlineSearchEnabled}
-                  onChange={(v) => void handleToggleOnlineSearch(v)}
-                  label="Разрешить поиск в онлайн-источниках"
-                />
-              </div>
-
-              <div className="rounded-xl bg-emerald-500/10 border border-emerald-400/25 px-2.5 py-2 text-[11px] text-emerald-100/90 leading-snug flex items-start gap-2">
-                <ShieldCheck className="w-4 h-4 text-emerald-300 shrink-0 mt-0.5" />
-                <span>
-                  <b>Приватность защищена:</b> текст ваших вопросов, суммы, траты и активы{' '}
-                  <b>никогда не отправляются наружу</b>. Приложение только скачивает публичную ленту
-                  в локальный кэш, очищает HTML и ищет совпадения на телефоне.
-                </span>
-              </div>
-
-              {/* Список обновляемых онлайн-источников */}
-              <div className="flex items-center justify-between gap-2">
-                <span className="text-[11px] font-bold text-slate-300">
-                  Публичные источники ({knowledgeBase.sources.filter((s) => s.enabled).length} актив.)
-                </span>
-                <button
-                  type="button"
-                  disabled={syncingSources || !knowledgeBase.onlineSearchEnabled}
-                  onClick={() => void handleRefreshOnlineSources()}
-                  className="px-2.5 py-1 rounded-lg bg-cyan-500/15 border border-cyan-400/35 text-[11px] font-bold text-cyan-200 hover:bg-cyan-500/25 disabled:opacity-45 cursor-pointer flex items-center gap-1 transition"
-                >
-                  <RefreshCw className={`w-3 h-3 ${syncingSources ? 'animate-spin' : ''}`} />
-                  <span>{syncingSources ? 'Обновление...' : 'Обновить кэш'}</span>
-                </button>
-              </div>
-
+            {/* Быстрое добавление проверенных источников */}
+            {PRESET_TRUSTED_SOURCES.some((p) => !knowledgeBase.sources.some((s) => s.url === p.url)) && (
               <div className="space-y-1.5">
-                {knowledgeBase.sources.map((src) => {
-                  const rec = onlineCache[src.id];
-                  const entriesCount = rec?.entries?.length || 0;
-                  return (
-                    <div
-                      key={src.id}
-                      className="rounded-xl bg-black/25 border border-white/10 px-2.5 py-2 flex items-start justify-between gap-2"
+                <div className="text-[11px] font-bold text-slate-300">
+                  Быстро подключить проверенный источник:
+                </div>
+                <div className="flex flex-wrap gap-1.5">
+                  {PRESET_TRUSTED_SOURCES.filter(
+                    (p) => !knowledgeBase.sources.some((s) => s.url === p.url)
+                  ).map((preset) => (
+                    <button
+                      key={preset.id}
+                      type="button"
+                      disabled={syncingSourceId !== null}
+                      onClick={() => void handleAddPresetSource(preset)}
+                      className="px-2.5 py-1 rounded-lg bg-cyan-500/12 hover:bg-cyan-500/22 border border-cyan-400/35 text-[11px] font-bold text-cyan-200 cursor-pointer transition disabled:opacity-50"
                     >
-                      <label className="flex items-start gap-2 min-w-0 flex-1 cursor-pointer">
-                        <input
-                          type="checkbox"
-                          checked={src.enabled}
-                          onChange={(e) => handleToggleSource(src.id, e.target.checked)}
-                          className="mt-0.5 w-4 h-4 accent-cyan-400 rounded shrink-0 cursor-pointer"
-                        />
-                        <div className="min-w-0">
-                          <div className="text-xs font-bold text-white leading-tight break-words">
-                            {src.name}
-                          </div>
-                          <div className="text-[10px] text-slate-400 truncate mt-0.5">{src.url}</div>
-                          {rec && (
-                            <div
-                              className={`text-[10px] mt-0.5 ${
-                                rec.status === 'ok' ? 'text-emerald-300' : 'text-amber-300'
-                              }`}
-                            >
-                              {rec.status === 'ok'
-                                ? `В кэше: ${entriesCount} записей · ${new Date(rec.fetchedAt).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' })}`
-                                : rec.error || 'Не удалось обновить'}
-                            </div>
-                          )}
+                      + {preset.name.split(' (')[0]}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Список доверенных источников */}
+            <div className="space-y-1.5">
+              <div className="text-[11px] font-bold text-slate-300">
+                Подключённые источники ({knowledgeBase.sources.filter((s) => s.enabled).length} актив. из{' '}
+                {knowledgeBase.sources.length})
+              </div>
+              {knowledgeBase.sources.map((src) => {
+                const rec = onlineCache[src.id];
+                const entriesCount = rec?.entries?.length || 0;
+                const isSyncingOne = syncingSourceId === src.id;
+                return (
+                  <div
+                    key={src.id}
+                    className="rounded-xl bg-black/25 border border-white/10 px-2.5 py-2 flex items-start justify-between gap-2"
+                  >
+                    <label className="flex items-start gap-2 min-w-0 flex-1 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={src.enabled}
+                        onChange={(e) => handleToggleSource(src.id, e.target.checked)}
+                        className="mt-0.5 w-4 h-4 accent-cyan-400 rounded shrink-0 cursor-pointer"
+                      />
+                      <div className="min-w-0 flex-1">
+                        <div className="text-xs font-bold text-white leading-tight break-words">
+                          {src.name}
                         </div>
-                      </label>
+                        <div className="text-[10px] text-slate-400 truncate mt-0.5">{src.url}</div>
+                        {rec && (
+                          <div
+                            className={`text-[10px] mt-0.5 ${
+                              rec.status === 'ok' ? 'text-emerald-300' : 'text-amber-300'
+                            }`}
+                          >
+                            {rec.status === 'ok'
+                              ? `В кэше: ${entriesCount} записей · ${new Date(rec.fetchedAt).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' })}`
+                              : rec.error || 'Не удалось обновить'}
+                          </div>
+                        )}
+                      </div>
+                    </label>
+                    <div className="flex items-center gap-0.5 shrink-0">
+                      <button
+                        type="button"
+                        disabled={isSyncingOne || syncingSources}
+                        onClick={() => void handleRefreshSingleSource(src)}
+                        className="p-1.5 rounded-lg text-cyan-200 hover:bg-cyan-500/15 cursor-pointer disabled:opacity-45"
+                        title="Обновить этот источник сейчас"
+                      >
+                        <RefreshCw className={`w-3.5 h-3.5 ${isSyncingOne ? 'animate-spin' : ''}`} />
+                      </button>
                       {!src.isDefault && (
                         <button
                           type="button"
                           onClick={() => handleDeleteSource(src.id)}
-                          className="p-1 rounded-lg text-rose-300 hover:bg-rose-500/15 cursor-pointer shrink-0"
+                          className="p-1.5 rounded-lg text-rose-300 hover:bg-rose-500/15 cursor-pointer"
                           title="Удалить источник"
                         >
                           <Trash2 className="w-3.5 h-3.5" />
                         </button>
                       )}
                     </div>
-                  );
-                })}
-              </div>
-
-              {/* Добавление своей ссылки */}
-              <div className="space-y-1.5 pt-1">
-                <input
-                  type="text"
-                  value={newSourceName}
-                  onChange={(e) => setNewSourceName(e.target.value)}
-                  placeholder="Название источника (например: Справка ЦБ или RSS)"
-                  className="fin-input w-full text-xs"
-                />
-                <div className="flex gap-1.5">
-                  <input
-                    type="url"
-                    value={newSourceUrl}
-                    onChange={(e) => {
-                      setNewSourceUrl(e.target.value);
-                      setSourceUrlError(null);
-                    }}
-                    placeholder="https://... (RSS, JSON или публичная страница)"
-                    className="fin-input flex-1 text-xs"
-                  />
-                  <button
-                    type="button"
-                    onClick={handleAddCustomSource}
-                    className="fin-btn ghost sm shrink-0 flex items-center gap-1"
-                  >
-                    <Plus className="w-3.5 h-3.5" />
-                    <span>Добавить</span>
-                  </button>
-                </div>
-                {sourceUrlError && (
-                  <div className="text-[11px] text-rose-300">{sourceUrlError}</div>
-                )}
-              </div>
+                  </div>
+                );
+              })}
             </div>
           </div>
         </div>

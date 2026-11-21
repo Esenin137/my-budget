@@ -50,6 +50,7 @@ import {
   UniversalCommandResult,
 } from './utils/finance';
 import { playReminderChime } from './utils/sound';
+import { syncEnabledOnlineSources } from './utils/knowledgeBase';
 import PlannerTab from './components/PlannerTab';
 import BudgetTab from './components/BudgetTab';
 import ExpensesTab from './components/ExpensesTab';
@@ -177,7 +178,7 @@ export default function App() {
     item: FamilyNamedAmount;
   } | null>(null);
   const [showCategoriesModal, setShowCategoriesModal] = useState(false);
-  const [settingsModalTab, setSettingsModalTab] = useState<'layout' | 'ai' | null>(null);
+  const [settingsModalTab, setSettingsModalTab] = useState<'layout' | 'ai' | 'kb' | null>(null);
   const [showUniversalVoice, setShowUniversalVoice] = useState(false);
   const [plannerFocusDate, setPlannerFocusDate] = useState<string | null>(null);
   const [viewingReceipt, setViewingReceipt] = useState<Transaction | null>(null);
@@ -189,6 +190,7 @@ export default function App() {
   const [activeAlertTask, setActiveAlertTask] = useState<CalendarTask | null>(null);
   const [toast, setToast] = useState<ToastState | null>(null);
   const toastTimerRef = useRef<number | null>(null);
+  const hasAutoSyncedKbRef = useRef<boolean>(false);
 
   const showToast = useCallback((message: string, undo?: () => void) => {
     if (toastTimerRef.current) window.clearTimeout(toastTimerRef.current);
@@ -241,11 +243,8 @@ export default function App() {
         setPinOverlayMode('unlock');
       } else if (pkg) {
         const hydrated = hydrateState(pkg);
-        // Always start in reliable 0 MB Offline Advisor mode on fresh launch
-        setState({
-          ...hydrated,
-          uiSettings: { ...hydrated.uiSettings, aiMode: 'offline' },
-        });
+        // Keep WebLLM safely unloaded until requested, while preserving user's offline/cloud API choice
+        setState(hydrated);
         setStorageReady(true);
       } else {
         setStorageReady(true);
@@ -255,6 +254,34 @@ export default function App() {
       mounted = false;
     };
   }, []);
+
+  // Auto-refresh trusted knowledge sources on EVERY app launch when enabled
+  useEffect(() => {
+    if (!storageReady || hasAutoSyncedKbRef.current) return;
+    const kb = state.knowledgeBase;
+    if (!kb?.onlineSearchEnabled || kb.autoSyncOnLaunch === false) return;
+    const activeSources = (kb.sources || []).filter((s) => s.enabled);
+    if (activeSources.length === 0) return;
+
+    hasAutoSyncedKbRef.current = true;
+    syncEnabledOnlineSources(kb.sources, { force: true })
+      .then((updatedCache) => {
+        const okCount = activeSources.filter((s) => updatedCache[s.id]?.status === 'ok').length;
+        setState((prev) => ({
+          ...prev,
+          knowledgeBase: {
+            ...prev.knowledgeBase,
+            lastAutoSyncAt: Date.now(),
+          },
+        }));
+        if (okCount > 0) {
+          showToast(`База знаний ИИ обновлена: ${okCount} из ${activeSources.length} источников`);
+        }
+      })
+      .catch(() => {
+        // Stay silent offline; cached entries remain available
+      });
+  }, [storageReady, state.knowledgeBase, showToast]);
 
   const commitState = useCallback(
     (updater: (prev: AppState) => AppState) => {
@@ -962,7 +989,7 @@ export default function App() {
       <HiddenSectionsContext.Provider value={state.uiSettings.hiddenSections}>
       <main
         className="workspace"
-        style={{ ['--col-count' as string]: Math.max(1, visibleNavItems.length) }}
+        style={{ ['--col-count' as string]: Math.min(3, Math.max(1, visibleNavItems.length)) }}
       >
         {state.uiSettings.visibleTabs.budget && (
         <div className={`tab-pane ${activeTab === 'budget' ? 'active' : ''}`} id="pane-budget">
@@ -1122,6 +1149,7 @@ export default function App() {
             onToggleSec={toggleSection}
             onApplyAdvisorPatch={(patch) => commitState((prev) => ({ ...prev, ...patch }))}
             onOpenAiSettings={() => setSettingsModalTab('ai')}
+            onOpenKnowledgeSettings={() => setSettingsModalTab('kb')}
           />
         </div>
         )}

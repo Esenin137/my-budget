@@ -120,6 +120,8 @@ export interface HabitItem {
 }
 
 export type AiMode = 'offline' | 'local-llm' | 'cloud';
+export type AiResponseStyle = 'concise' | 'balanced' | 'detailed';
+export type AiCloudProvider = 'auto' | 'gemini-flash' | 'gemini-lite' | 'openai';
 export type ThemeStyle = 'premium' | 'classic';
 
 export interface UiSettings {
@@ -134,6 +136,13 @@ export interface UiSettings {
   aiVoiceEnabled: boolean;
   aiQuickPrompts: boolean;
   localModelId: string;
+  aiCloudProvider: AiCloudProvider;
+  aiResponseStyle: AiResponseStyle;
+  aiStrictMode: boolean;
+  aiHistoryTurns: number;
+  aiIncludeFinanceContext: boolean;
+  aiUseKnowledgeBase: boolean;
+  aiCustomInstruction: string;
 }
 
 export interface KnowledgeRule {
@@ -158,6 +167,8 @@ export interface KnowledgeBaseState {
   rules: KnowledgeRule[];
   sources: KnowledgeSource[];
   onlineSearchEnabled: boolean;
+  autoSyncOnLaunch: boolean;
+  lastAutoSyncAt?: number | null;
 }
 
 export type BrokerId = 'sber' | 'tbank' | 'vtb' | 'alfa' | 'bks' | 'other';

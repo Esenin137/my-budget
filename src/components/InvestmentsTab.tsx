@@ -88,11 +88,7 @@ export default function InvestmentsTab({
   );
 
   const scannerBudget =
-    scannerBudgetMode === 'free' && investments.freeCash > 0
-      ? investments.freeCash
-      : investments.monthlyPlan > 0
-      ? investments.monthlyPlan
-      : investments.freeCash;
+    scannerBudgetMode === 'free' ? investments.freeCash : investments.monthlyPlan;
 
   const scannerReport = useMemo(
     () =>
@@ -944,27 +940,34 @@ export default function InvestmentsTab({
         )}
 
         {/* Список рекомендаций */}
-        <div className="space-y-1.5 max-h-80 overflow-y-auto pr-0.5">
+        <div className="space-y-2 max-h-96 overflow-y-auto pr-0.5">
           {scannerReport.candidates.slice(0, 8).map((c) => {
             const monthsLbl = c.instrument.payoutMonths.map((m) => MONTH_SHORT_RU[m - 1]).join(', ');
             const canBuyNow = c.affordableLots > 0;
             const canBuyWithFlex = !canBuyNow && c.flexTopUpNeeded > 0;
 
             return (
-              <div key={c.instrument.ticker} className="tx-tile">
-                <div className="min-w-0 flex-1">
-                  <div className="flex items-baseline justify-between gap-2">
-                    <b className="truncate text-[var(--ink)]">{c.instrument.name}</b>
-                    <span className="text-emerald-400 font-bold text-xs tabular-nums shrink-0">
-                      {c.instrument.annualYieldPct}%
-                    </span>
-                  </div>
-                  <div className="fin-sub tabular-nums mt-0.5 truncate">
-                    {KIND_LABELS[c.instrument.kind]} · {formatMoney(c.unitPrice)}
-                    {c.instrument.lotSize > 1 ? ` (лот ${c.instrument.lotSize} шт = ${formatMoney(c.lotPrice)})` : ''}
-                    {monthsLbl ? ` · ${monthsLbl}` : ''}
-                  </div>
-                  <div className="fin-sub tabular-nums mt-0.5 truncate">
+              <div
+                key={c.instrument.ticker}
+                className="rounded-2xl bg-[var(--fld)] border border-[var(--line)] p-3 space-y-1.5"
+              >
+                <div className="flex items-baseline justify-between gap-2">
+                  <b className="text-sm text-[var(--ink)] leading-snug">{c.instrument.name}</b>
+                  <span className="text-emerald-400 font-bold text-xs tabular-nums shrink-0">
+                    {c.instrument.annualYieldPct}% год.
+                  </span>
+                </div>
+
+                <div className="fin-sub tabular-nums leading-snug">
+                  {KIND_LABELS[c.instrument.kind]} · {formatMoney(c.unitPrice)}
+                  {c.instrument.lotSize > 1
+                    ? ` (лот ${c.instrument.lotSize} шт = ${formatMoney(c.lotPrice)})`
+                    : ''}
+                  {monthsLbl ? ` · ${monthsLbl}` : ''}
+                </div>
+
+                <div className="flex items-center justify-between gap-2 pt-1 flex-wrap">
+                  <div className="fin-sub tabular-nums leading-snug flex-1 min-w-[160px]">
                     {canBuyNow ? (
                       <>
                         Доступно {c.affordableUnits} шт ({formatMoney(c.affordableCost)}) · ~
@@ -975,27 +978,27 @@ export default function InvestmentsTab({
                         Доплата +{formatMoney(c.flexTopUpNeeded)} → 1 лот ({formatMoney(c.lotPrice)})
                       </span>
                     ) : (
-                      <>Нужно {formatMoney(c.lotPrice)} за лот</>
+                      <>Цена лота: {formatMoney(c.lotPrice)}</>
                     )}
                     {c.newMonthsCovered.length > 0 && strategy === 'monthly_salary'
                       ? ` · закроет ${c.newMonthsCovered.map((m) => MONTH_SHORT_RU[m - 1]).join(', ')}`
                       : ''}
                   </div>
-                </div>
 
-                <button
-                  type="button"
-                  onClick={() =>
-                    handleQuickAddFromScanner(
-                      c.instrument,
-                      canBuyNow ? c.affordableUnits : c.instrument.lotSize,
-                      c.unitPrice
-                    )
-                  }
-                  className={`fin-btn sm shrink-0 ${canBuyNow ? '' : 'ghost'}`}
-                >
-                  {canBuyNow ? '+ Купить' : '+ Добавить'}
-                </button>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      handleQuickAddFromScanner(
+                        c.instrument,
+                        canBuyNow ? c.affordableUnits : c.instrument.lotSize,
+                        c.unitPrice
+                      )
+                    }
+                    className={`fin-btn sm shrink-0 ${canBuyNow ? '' : 'ghost'}`}
+                  >
+                    {canBuyNow ? '+ Купить' : '+ В портфель'}
+                  </button>
+                </div>
               </div>
             );
           })}

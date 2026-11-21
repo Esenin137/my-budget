@@ -291,21 +291,46 @@ export async function deleteLocalModelCache(modelId: string): Promise<void> {
   });
 }
 
+export interface LocalLlmAskOptions {
+  responseStyle?: 'concise' | 'balanced' | 'detailed';
+  strictMode?: boolean;
+  customInstruction?: string;
+  historyTurns?: number;
+}
+
 async function runCompletion(
   engine: MLCEngineInterface,
   question: string,
   financialSnapshot: string,
-  history: { role: 'user' | 'assistant'; content: string }[]
+  history: { role: 'user' | 'assistant'; content: string }[],
+  options?: LocalLlmAskOptions
 ): Promise<string> {
   const mobile = isMobileClient();
+  const style = options?.responseStyle || 'balanced';
+  const styleRule =
+    style === 'concise'
+      ? 'Отвечай максимально кратко: 2–4 коротких пункта без воды.'
+      : style === 'detailed'
+      ? 'Дай структурированный ответ с конкретными расчётами и практическими шагами (6–10 предложений).'
+      : 'Отвечай кратко, практично и понятно (3–6 предложений, без таблиц).';
+  const strictRule =
+    options?.strictMode !== false
+      ? 'Не выдумывай факты, ставки и законы, которых нет в переданных данных, выжимках или доверенных источниках.'
+      : 'Опирайся на переданные данные, а при нехватке данных чётко обозначай общие ориентиры.';
+  const customRule = options?.customInstruction?.trim()
+    ? `\nДополнительные требования пользователя: ${options.customInstruction.trim().slice(0, 400)}`
+    : '';
+
   const systemPrompt =
-    'Ты — персональный финансовый советник в приложении «Мои финансы» (Россия, рубли ₽). ' +
-    'Отвечай на русском языке кратко, практично и понятно (3–5 предложений, без таблиц). ' +
-    'Не выдумывай факты и законы, которых нет в переданных данных. ' +
-    'Используй реальные цифры пользователя и найденные фрагменты базы знаний:\n' +
+    `Ты — персональный финансовый советник в приложении «Мои финансы» (Россия, рубли ₽). ` +
+    `${styleRule} ${strictRule}${customRule}\n` +
+    `Используй реальные данные пользователя, выжимки и доверенные источники:\n` +
     financialSnapshot;
 
-  const trimmedHistory = history.slice(mobile ? -2 : -4);
+  const maxTurns = Math.min(mobile ? 4 : 6, Math.max(2, options?.historyTurns ?? (mobile ? 2 : 4)));
+  const trimmedHistory = history.slice(-maxTurns);
+  const maxTokens =
+    style === 'concise' ? (mobile ? 180 : 220) : style === 'detailed' ? (mobile ? 340 : 480) : mobile ? 240 : 320;
   try {
     const completion = await engine.chat.completions.create({
       messages: [
@@ -313,8 +338,8 @@ async function runCompletion(
         ...trimmedHistory,
         { role: 'user', content: question },
       ],
-      temperature: 0.35,
-      max_tokens: mobile ? 240 : 320,
+      temperature: options?.strictMode !== false ? 0.25 : 0.4,
+      max_tokens: maxTokens,
     });
 
     const reply = (completion.choices[0]?.message?.content || '').trim();
@@ -337,7 +362,8 @@ async function runCompletion(
 export async function askLocalLlm(
   question: string,
   financialSnapshot: string,
-  history: { role: 'user' | 'assistant'; content: string }[]
+  history: { role: 'user' | 'assistant'; content: string }[],
+  options?: LocalLlmAskOptions
 ): Promise<string | null> {
   const activeModelId = currentState.modelId;
   if (!engineInstance || currentState.status !== 'ready' || !activeModelId) {
@@ -345,7 +371,7 @@ export async function askLocalLlm(
   }
 
   try {
-    return await runCompletion(engineInstance, question, financialSnapshot, history);
+    return await runCompletion(engineInstance, question, financialSnapshot, history, options);
   } catch (err: unknown) {
     // Always safely unload and reset engineInstance = null on GPU/Tokenizer/VRAM or unexpected errors
     const isMemoryOrGpuErr =
