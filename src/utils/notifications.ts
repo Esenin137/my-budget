@@ -1,6 +1,6 @@
-import { Capacitor } from '@capacitor/core';
+import { Capacitor, registerPlugin } from '@capacitor/core';
 import { LocalNotifications, type LocalNotificationSchema } from '@capacitor/local-notifications';
-import { AppState, PortfolioAsset, TabId } from '../types';
+import { AlertSoundPreset, AppState, PortfolioAsset, TabId } from '../types';
 import {
   advanceRepeatDate,
   fmtShortDate,
@@ -30,13 +30,73 @@ export interface UpcomingReminder {
   isMonthEstimate?: boolean;
 }
 
-const CHANNEL_ID = 'finance-reminders';
 const MAX_NATIVE_NOTIFS = 48;
 const SHOWN_INAPP_KEY = 'my-budget-shown-rem-v1';
+
+interface NotificationChannelSpec {
+  id: string;
+  name: string;
+  description: string;
+  sound?: string;
+}
+
+const SOUND_CHANNEL_SPECS: Record<AlertSoundPreset, NotificationChannelSpec> = {
+  soft: {
+    id: 'channel_sound_soft',
+    name: 'Напоминания — Мягкий звон',
+    description: 'Уведомления о задачах, вкладах и выплатах (Мягкий звон)',
+    sound: 'sound_soft.wav',
+  },
+  coin: {
+    id: 'channel_sound_coin',
+    name: 'Напоминания — Звон монет',
+    description: 'Уведомления о купонах, дивидендах, вкладах и платежах (Звон монет)',
+    sound: 'sound_coin.wav',
+  },
+  chord: {
+    id: 'channel_sound_chord',
+    name: 'Напоминания — Деловой аккорд',
+    description: 'Уведомления о задачах календаря и платежах (Деловой аккорд)',
+    sound: 'sound_chord.wav',
+  },
+  pulse: {
+    id: 'channel_sound_pulse',
+    name: 'Напоминания — Короткий импульс',
+    description: 'Уведомления о финансовых датах (Короткий импульс)',
+    sound: 'sound_pulse.wav',
+  },
+  system: {
+    id: 'channel_sound_system',
+    name: 'Напоминания — Системный звук',
+    description: 'Уведомления со стандартным звуком телефона Android',
+  },
+};
+
+interface NativeNotificationSettingsPlugin {
+  openNotificationSettings(options?: { channelId?: string }): Promise<{ opened?: boolean }>;
+}
+
+const NotificationSettingsBridge = registerPlugin<NativeNotificationSettingsPlugin>(
+  'NotificationSettings'
+);
+
+export function getNotificationChannelForPreset(
+  preset: AlertSoundPreset = 'soft'
+): NotificationChannelSpec {
+  return SOUND_CHANNEL_SPECS[preset] || SOUND_CHANNEL_SPECS.soft;
+}
 
 export function isNativeNotificationsPlatform(): boolean {
   try {
     return Capacitor.isNativePlatform();
+  } catch {
+    return false;
+  }
+}
+
+export function isAndroidNativePlatform(): boolean {
+  try {
+    return Capacitor.isNativePlatform() && Capacitor.getPlatform() === 'android';
   } catch {
     return false;
   }
@@ -363,28 +423,50 @@ export async function getNotificationPermissionState(): Promise<'granted' | 'den
   return 'unsupported';
 }
 
-export async function ensureAndroidNotificationChannel(): Promise<void> {
-  if (!isNativeNotificationsPlatform()) return;
+export async function ensureAndroidNotificationChannel(
+  preset: AlertSoundPreset = 'soft'
+): Promise<NotificationChannelSpec> {
+  const spec = getNotificationChannelForPreset(preset);
+  if (!isNativeNotificationsPlatform()) return spec;
   try {
     await LocalNotifications.createChannel({
-      id: CHANNEL_ID,
-      name: 'Финансовые напоминания',
-      description: 'Уведомления о задачах календаря, сроках вкладов, купонах и платежах',
+      id: spec.id,
+      name: spec.name,
+      description: spec.description,
       importance: 4,
       visibility: 1,
       vibration: true,
       lights: true,
       lightColor: '#1FB892',
+      ...(spec.sound ? { sound: spec.sound } : {}),
     });
   } catch {
     // Safe fallback if channel creation unsupported on current platform
   }
+  return spec;
 }
 
-export async function requestNotificationPermissions(): Promise<'granted' | 'denied' | 'prompt' | 'unsupported'> {
+export async function openAndroidNotificationSettings(
+  preset: AlertSoundPreset = 'soft'
+): Promise<boolean> {
+  if (!isAndroidNativePlatform()) return false;
+  try {
+    const spec = await ensureAndroidNotificationChannel(preset);
+    const res = await NotificationSettingsBridge.openNotificationSettings({
+      channelId: spec.id,
+    });
+    return res?.opened !== false;
+  } catch {
+    return false;
+  }
+}
+
+export async function requestNotificationPermissions(
+  preset: AlertSoundPreset = 'soft'
+): Promise<'granted' | 'denied' | 'prompt' | 'unsupported'> {
   if (isNativeNotificationsPlatform()) {
     try {
-      await ensureAndroidNotificationChannel();
+      await ensureAndroidNotificationChannel(preset);
       const current = await LocalNotifications.checkPermissions();
       if (current.display === 'granted') return 'granted';
       const requested = await LocalNotifications.requestPermissions();
@@ -427,7 +509,9 @@ export async function syncNativeLocalNotifications(
       return { scheduled: 0, granted: false };
     }
 
-    await ensureAndroidNotificationChannel();
+    const soundEnabled = state.uiSettings?.soundAlertsEnabled !== false;
+    const soundPreset: AlertSoundPreset = state.uiSettings?.soundPreset || 'soft';
+    const channelSpec = await ensureAndroidNotificationChannel(soundPreset);
 
     // Clear previously scheduled finance reminders managed by our app
     try {
@@ -455,6 +539,7 @@ export async function syncNativeLocalNotifications(
       if (!dt) continue;
 
       const amountSuffix = rem.amount && rem.amount > 0 ? ` · ${formatMoney(rem.amount)}` : '';
+      const soundField = soundEnabled && channelSpec.sound ? { sound: channelSpec.sound } : {};
 
       // A) 1 day before ("Завтра: ...")
       if (remindDayBefore) {
@@ -465,7 +550,8 @@ export async function syncNativeLocalNotifications(
             title: `Завтра · ${rem.title}`,
             body: `${rem.subtitle}${amountSuffix}`,
             schedule: { at: dayBefore, allowWhileIdle: true },
-            channelId: CHANNEL_ID,
+            channelId: channelSpec.id,
+            ...soundField,
             smallIcon: 'ic_stat_finance',
             iconColor: '#1FB892',
             extra: {
@@ -497,7 +583,8 @@ export async function syncNativeLocalNotifications(
           title: `Сегодня · ${rem.title}`,
           body: `${rem.subtitle}${amountSuffix}`,
           schedule: { at: new Date(eventAtMs), allowWhileIdle: true },
-          channelId: CHANNEL_ID,
+          channelId: channelSpec.id,
+          ...soundField,
           smallIcon: 'ic_stat_finance',
           iconColor: '#1FB892',
           extra: {

@@ -31,6 +31,7 @@ import {
   AiCloudProvider,
   AiMode,
   AiResponseStyle,
+  AlertSoundPreset,
   KnowledgeBaseState,
   KnowledgeRule,
   KnowledgeSource,
@@ -60,10 +61,13 @@ import {
   validateSafeSourceUrl,
 } from '../utils/knowledgeBase';
 import { uid } from '../utils/finance';
-import { playReminderChime } from '../utils/sound';
+import { ALERT_SOUND_OPTIONS, playReminderChime } from '../utils/sound';
 import {
+  ensureAndroidNotificationChannel,
   getNotificationPermissionState,
+  isAndroidNativePlatform,
   isNativeNotificationsPlatform,
+  openAndroidNotificationSettings,
   requestNotificationPermissions,
 } from '../utils/notifications';
 import { ModalShell } from './Modals';
@@ -222,6 +226,8 @@ export default function AppSettingsModal({
   const [requestingNotif, setRequestingNotif] = useState(false);
   const webGpuOk = isWebGpuSupported();
   const isNativeApk = isNativeNotificationsPlatform();
+  const isAndroidApk = isAndroidNativePlatform();
+  const currentSoundPreset: AlertSoundPreset = settings.soundPreset || 'soft';
 
   // Server API status state
   const [apiStatus, setApiStatus] = useState<ServerApiStatus>({
@@ -728,12 +734,34 @@ export default function AppSettingsModal({
     onShowToast('Источник удалён.');
   };
 
-  const handleTestSound = () => {
-    const ok = playReminderChime('test');
+  const handlePreviewSound = (preset: AlertSoundPreset = currentSoundPreset) => {
+    const ok = playReminderChime(preset);
+    const opt = ALERT_SOUND_OPTIONS.find((o) => o.id === preset);
     if (ok) {
-      onShowToast('🔔 Звуковой сигнал оповещения воспроизведён.');
+      if (preset === 'system') {
+        onShowToast('🔔 На Android будет звучать системный рингтон уведомлений телефона.');
+      } else {
+        onShowToast(`▶ Мелодия: «${opt?.label || 'Мягкий звон'}»`);
+      }
     } else {
       onShowToast('Звук заблокирован браузером — проверьте громкость устройства.');
+    }
+  };
+
+  const handleSelectSoundPreset = async (nextPreset: AlertSoundPreset) => {
+    onChange({ ...settings, soundPreset: nextPreset });
+    if (isNativeApk) {
+      await ensureAndroidNotificationChannel(nextPreset);
+      onSyncNotifications?.();
+    }
+    const opt = ALERT_SOUND_OPTIONS.find((o) => o.id === nextPreset);
+    onShowToast(`Мелодия оповещения: «${opt?.label || nextPreset}»`);
+  };
+
+  const handleOpenAndroidSoundSettings = async () => {
+    const opened = await openAndroidNotificationSettings(currentSoundPreset);
+    if (!opened) {
+      onShowToast('Откройте: Настройки телефона → Приложения → Мои финансы → Уведомления.');
     }
   };
 
@@ -741,11 +769,11 @@ export default function AppSettingsModal({
     if (requestingNotif) return;
     setRequestingNotif(true);
     try {
-      const nextPerm = await requestNotificationPermissions();
+      const nextPerm = await requestNotificationPermissions(currentSoundPreset);
       setNotifPerm(nextPerm);
       if (nextPerm === 'granted') {
         if (settings.soundAlertsEnabled !== false) {
-          playReminderChime('test');
+          playReminderChime(currentSoundPreset);
         }
         onSyncNotifications?.();
         onShowToast(
@@ -769,6 +797,7 @@ export default function AppSettingsModal({
       ...def,
       themeStyle: settings.themeStyle,
       soundAlertsEnabled: settings.soundAlertsEnabled,
+      soundPreset: settings.soundPreset,
       remindDayBefore: settings.remindDayBefore,
       reminderHour: settings.reminderHour,
       aiMode: settings.aiMode,
@@ -983,14 +1012,9 @@ export default function AppSettingsModal({
                 <Bell className="w-3.5 h-3.5 text-amber-300" />
                 <span>Оповещения и звук</span>
               </div>
-              <button
-                type="button"
-                onClick={handleTestSound}
-                className="px-2.5 py-1 rounded-lg bg-emerald-500/15 hover:bg-emerald-500/25 border border-emerald-400/35 text-[11px] font-bold text-emerald-200 flex items-center gap-1 cursor-pointer transition"
-              >
-                <Volume2 className="w-3.5 h-3.5" />
-                <span>Тест звука</span>
-              </button>
+              <span className="text-[10.5px] text-slate-400">
+                {isAndroidApk ? 'Android APK' : 'Web Audio'}
+              </span>
             </div>
 
             <div className="flex items-center justify-between gap-2 text-xs">
@@ -1003,6 +1027,39 @@ export default function AppSettingsModal({
                 onChange={(v) => onChange({ ...settings, soundAlertsEnabled: v })}
                 label="Звук оповещений"
               />
+            </div>
+
+            <div className="space-y-1.5 pt-2 border-t border-white/10 text-xs">
+              <div className="flex items-center justify-between gap-2">
+                <div className="font-bold text-slate-100">Мелодия оповещения</div>
+                <span className="fin-sub truncate">
+                  {ALERT_SOUND_OPTIONS.find((o) => o.id === currentSoundPreset)?.hint}
+                </span>
+              </div>
+              <div className="flex items-center gap-1.5">
+                <select
+                  aria-label="Мелодия оповещения"
+                  className="fin-select flex-1 min-w-0 text-xs py-1.5 px-2.5"
+                  value={currentSoundPreset}
+                  onChange={(e) =>
+                    void handleSelectSoundPreset(e.target.value as AlertSoundPreset)
+                  }
+                >
+                  {ALERT_SOUND_OPTIONS.map((opt) => (
+                    <option key={opt.id} value={opt.id}>
+                      {opt.label}
+                    </option>
+                  ))}
+                </select>
+                <button
+                  type="button"
+                  onClick={() => handlePreviewSound(currentSoundPreset)}
+                  className="px-2.5 py-1.5 rounded-xl bg-emerald-500/15 hover:bg-emerald-500/25 border border-emerald-400/35 text-[11px] font-bold text-emerald-200 flex items-center gap-1 shrink-0 cursor-pointer transition"
+                >
+                  <Volume2 className="w-3.5 h-3.5" />
+                  <span>▶ Прослушать</span>
+                </button>
+              </div>
             </div>
 
             <div className="flex items-center justify-between gap-2 text-xs pt-2 border-t border-white/10">
@@ -1063,6 +1120,21 @@ export default function AppSettingsModal({
                 {notifPerm === 'granted' ? 'Обновить' : 'Включить'}
               </button>
             </div>
+
+            {isAndroidApk && (
+              <div className="pt-2 border-t border-white/10">
+                <button
+                  type="button"
+                  onClick={() => void handleOpenAndroidSoundSettings()}
+                  className="w-full py-2 px-3 rounded-xl bg-white/[0.06] hover:bg-white/[0.11] border border-white/15 text-xs font-bold text-slate-100 flex items-center justify-center gap-1.5 cursor-pointer transition"
+                >
+                  <span>⚙️ Системные настройки звука Android</span>
+                </button>
+                <div className="fin-sub mt-1">
+                  Откроет системный канал уведомлений — можно выбрать любой рингтон из памяти телефона.
+                </div>
+              </div>
+            )}
           </div>
 
           {/* Разделы и вложенные окна */}

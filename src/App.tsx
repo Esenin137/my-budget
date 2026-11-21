@@ -312,6 +312,7 @@ export default function App() {
   useEffect(() => {
     if (!storageReady) return;
     const soundEnabled = state.uiSettings?.soundAlertsEnabled !== false;
+    const soundPreset = state.uiSettings?.soundPreset || 'soft';
 
     const checkReminders = () => {
       const now = new Date();
@@ -360,7 +361,7 @@ export default function App() {
 
       if (found) {
         const { task: due, occIso, notifKey } = found;
-        if (soundEnabled) playReminderChime('urgent');
+        if (soundEnabled) playReminderChime(soundPreset);
         setActiveAlertTask({ ...due, date: occIso });
         commitState((prev) => ({
           ...prev,
@@ -387,7 +388,7 @@ export default function App() {
         const { reminder, stage, dedupKey } = dueFinancial;
         markInAppReminderShown(dedupKey);
         if (soundEnabled) {
-          playReminderChime(stage === 'today' ? 'urgent' : 'default');
+          playReminderChime(soundPreset);
         }
         setActiveFinancialReminder({ reminder, stage });
         if (!isNativeNotificationsPlatform() && 'Notification' in window && Notification.permission === 'granted') {
@@ -416,7 +417,7 @@ export default function App() {
     if (hasRequestedNativeNotifRef.current) return;
     hasRequestedNativeNotifRef.current = true;
 
-    requestNotificationPermissions()
+    requestNotificationPermissions(state.uiSettings?.soundPreset || 'soft')
       .then((perm) => {
         if (perm === 'granted') {
           void syncNativeLocalNotifications(state);
@@ -436,6 +437,8 @@ export default function App() {
     state.tasks,
     state.tx,
     state.investments.assets,
+    state.uiSettings.soundAlertsEnabled,
+    state.uiSettings.soundPreset,
     state.uiSettings.remindDayBefore,
     state.uiSettings.reminderHour,
   ]);
@@ -1192,7 +1195,7 @@ export default function App() {
             onShowToast={showToast}
             onTestReminder={(sampleTitle) => {
               if (state.uiSettings?.soundAlertsEnabled !== false) {
-                playReminderChime('test');
+                playReminderChime(state.uiSettings?.soundPreset || 'soft');
               }
               setActiveAlertTask({
                 id: -1,

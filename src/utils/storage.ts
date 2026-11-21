@@ -1,4 +1,5 @@
 import {
+  AlertSoundPreset,
   AppState,
   AssetKind,
   BrokerId,
@@ -49,6 +50,7 @@ export function createDefaultUiSettings(): UiSettings {
     aiUseKnowledgeBase: true,
     aiCustomInstruction: '',
     soundAlertsEnabled: true,
+    soundPreset: 'soft',
     remindDayBefore: true,
     reminderHour: 9,
   };
@@ -292,6 +294,14 @@ export function hydrateState(raw: Partial<AppState> | null | undefined): AppStat
         ? rawUi.aiCustomInstruction.slice(0, 800)
         : '',
     soundAlertsEnabled: rawUi?.soundAlertsEnabled !== false,
+    soundPreset:
+      rawUi?.soundPreset === 'soft' ||
+      rawUi?.soundPreset === 'coin' ||
+      rawUi?.soundPreset === 'chord' ||
+      rawUi?.soundPreset === 'pulse' ||
+      rawUi?.soundPreset === 'system'
+        ? (rawUi.soundPreset as AlertSoundPreset)
+        : defUi.soundPreset,
     remindDayBefore: rawUi?.remindDayBefore !== false,
     reminderHour:
       typeof rawUi?.reminderHour === 'number' &&

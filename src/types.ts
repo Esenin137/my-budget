@@ -123,6 +123,7 @@ export type AiMode = 'offline' | 'local-llm' | 'cloud';
 export type AiResponseStyle = 'concise' | 'balanced' | 'detailed';
 export type AiCloudProvider = 'auto' | 'gemini-flash' | 'gemini-lite' | 'openai';
 export type ThemeStyle = 'premium' | 'classic';
+export type AlertSoundPreset = 'soft' | 'coin' | 'chord' | 'pulse' | 'system';
 
 export interface UiSettings {
   themeStyle: ThemeStyle;
@@ -144,6 +145,7 @@ export interface UiSettings {
   aiUseKnowledgeBase: boolean;
   aiCustomInstruction: string;
   soundAlertsEnabled: boolean;
+  soundPreset: AlertSoundPreset;
   remindDayBefore: boolean;
   reminderHour: number;
 }

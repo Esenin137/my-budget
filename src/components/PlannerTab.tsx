@@ -468,12 +468,13 @@ export default function PlannerTab({
   };
 
   const handleRequestNotifications = async () => {
+    const preset = state.uiSettings?.soundPreset || 'soft';
     try {
-      const perm = await requestNotificationPermissions();
+      const perm = await requestNotificationPermissions(preset);
       setNotifPerm(perm === 'prompt' ? 'default' : perm);
       if (perm === 'granted') {
         if (state.uiSettings?.soundAlertsEnabled !== false) {
-          playReminderChime('test');
+          playReminderChime(preset);
         }
         onShowToast('🔔 Оповещения включены!');
       } else if (perm === 'unsupported') {
