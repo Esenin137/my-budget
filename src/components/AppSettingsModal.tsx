@@ -77,13 +77,12 @@ const SECTION_GROUPS: SectionConfigGroup[] = [
   {
     tabId: 'budget',
     icon: '💰',
-    label: 'Бюджет и Вклады',
+    label: 'Бюджет',
     accent: '#19A886',
     sections: [
       { id: 'sec-inc-add', label: 'Записать доход' },
       { id: 'sec-inc-list', label: 'Список доходов за период' },
       { id: 'sec-goals-tank', label: 'Цель и Лимит (резервуары)' },
-      { id: 'sec-deposits', label: 'Вклады и сбережения' },
       { id: 'sec-security', label: 'ПИН-код, Excel и резервные копии' },
     ],
   },
@@ -101,12 +100,12 @@ const SECTION_GROUPS: SectionConfigGroup[] = [
   {
     tabId: 'invest',
     icon: '📈',
-    label: 'ИИС и Активы',
+    label: 'Пассивный доход',
     accent: '#E8B44C',
     sections: [
-      { id: 'sec-inv-overview', label: 'Брокер, капитал, план ИИС 13% и MOEX' },
-      { id: 'sec-inv-assets', label: 'Мои активы (Купоны, Дивиденды, Вклады)' },
-      { id: 'sec-inv-scanner', label: 'Сканер рынка и подбор покупок' },
+      { id: 'sec-inv-overview', label: 'Брокер, план ИИС 13% и Мосбиржа' },
+      { id: 'sec-inv-assets', label: 'Мои активы и вклады' },
+      { id: 'sec-inv-scanner', label: 'Сканер рынка и выплаты' },
     ],
   },
   {

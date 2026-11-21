@@ -173,10 +173,15 @@ export default function AdvisorTab({
       .slice(0, 6)
       .map(([name, amount]) => ({ name, amount }));
 
-    const depositsTotal = state.deposits.reduce((sum, d) => sum + (d.sum || 0), 0);
-    const depositsSummary = state.deposits
+    const invBankDeps = (state.investments?.assets || []).filter((a) => a.kind === 'deposit');
+    const depositsTotal =
+      state.deposits.reduce((sum, d) => sum + (d.sum || 0), 0) +
+      invBankDeps.reduce((sum, a) => sum + (a.price || 0), 0);
+    const depositsSummary = [
+      ...state.deposits.map((d) => `${d.name}: ${Math.round(d.sum)} ₽ под ${d.rate}%`),
+      ...invBankDeps.map((a) => `${a.name}: ${Math.round(a.price)} ₽ под ${a.annualYieldPct}%`),
+    ]
       .slice(0, 5)
-      .map((d) => `${d.name}: ${Math.round(d.sum)} ₽ под ${d.rate}%`)
       .join('; ');
 
     const invSummary = analyzeInvestments(state.investments, state.deposits);

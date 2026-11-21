@@ -59,6 +59,7 @@ export default defineConfig(({command}) => {
           ],
         },
         workbox: {
+          cleanupOutdatedCaches: true,
           globPatterns: ['**/*.{js,css,html,ico,png,svg,woff,woff2}'],
           globIgnores: ['**/assets/aistudio/**'],
           maximumFileSizeToCacheInBytes: 8 * 1024 * 1024,
@@ -115,7 +116,7 @@ export default defineConfig(({command}) => {
           ],
         },
         devOptions: {
-          enabled: true,
+          enabled: false,
           type: 'module',
         },
       }),

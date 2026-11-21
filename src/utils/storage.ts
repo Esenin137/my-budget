@@ -225,9 +225,14 @@ export function hydrateState(raw: Partial<AppState> | null | undefined): AppStat
 
   const defUi = createDefaultUiSettings();
   const rawUi = raw.uiSettings;
+  const rawVis = rawUi?.visibleTabs;
   const mergedVisibleTabs = {
-    ...defUi.visibleTabs,
-    ...(rawUi?.visibleTabs || {}),
+    budget: rawVis?.budget !== false,
+    expenses: rawVis?.expenses !== false,
+    invest: rawVis?.invest !== false,
+    planner: rawVis?.planner !== false,
+    advisor: rawVis?.advisor !== false,
+    family: rawVis?.family !== false,
   };
   if (!Object.values(mergedVisibleTabs).some(Boolean)) {
     mergedVisibleTabs.budget = true;
@@ -236,7 +241,9 @@ export function hydrateState(raw: Partial<AppState> | null | undefined): AppStat
   const uiSettings: UiSettings = {
     themeStyle: rawUi?.themeStyle === 'classic' ? 'classic' : 'premium',
     visibleTabs: mergedVisibleTabs,
-    hiddenSections: Array.isArray(rawUi?.hiddenSections) ? rawUi.hiddenSections : [],
+    hiddenSections: Array.isArray(rawUi?.hiddenSections)
+      ? rawUi.hiddenSections.filter((s) => s !== 'sec-deposits')
+      : [],
     heroTodayHub: rawUi?.heroTodayHub !== false,
     heroSummaryStrip: rawUi?.heroSummaryStrip !== false,
     heroSafePill: rawUi?.heroSafePill !== false,
@@ -311,6 +318,34 @@ export function hydrateState(raw: Partial<AppState> | null | undefined): AppStat
         }))
     : [];
 
+  // Seamless one-time migration of legacy budget deposits into Пассивный доход
+  const legacyDeposits = Array.isArray(raw.deposits) ? raw.deposits : [];
+  if (legacyDeposits.length > 0) {
+    const existingKeys = new Set(
+      hydratedAssets
+        .filter((a) => a.kind === 'deposit')
+        .map((a) => `${a.name.trim().toLowerCase()}|${Math.round(a.price)}`)
+    );
+    legacyDeposits.forEach((dep, idx) => {
+      const cleanName = typeof dep?.name === 'string' && dep.name.trim() ? dep.name.trim() : 'Вклад';
+      const sum = Math.max(0, Number(dep?.sum) || 0);
+      const rate = Math.max(0, Number(dep?.rate) || 0);
+      const key = `${cleanName.toLowerCase()}|${Math.round(sum)}`;
+      if (existingKeys.has(key)) return;
+      existingKeys.add(key);
+      hydratedAssets.push({
+        id: typeof dep.id === 'number' ? dep.id : Date.now() + 500 + idx,
+        kind: 'deposit',
+        ticker: '',
+        name: cleanName,
+        qty: 1,
+        price: sum,
+        annualYieldPct: rate,
+        payoutMonths: [],
+      });
+    });
+  }
+
   const investments: InvestmentsState = {
     broker: rawInv?.broker && validBrokers.includes(rawInv.broker) ? rawInv.broker : defInv.broker,
     brokerCustomName: typeof rawInv?.brokerCustomName === 'string' ? rawInv.brokerCustomName : '',
@@ -327,7 +362,7 @@ export function hydrateState(raw: Partial<AppState> | null | undefined): AppStat
     tx,
     budget: raw.budget || 0,
     cats: Array.isArray(raw.cats) && raw.cats.length ? raw.cats : base.cats,
-    deposits: Array.isArray(raw.deposits) ? raw.deposits : [],
+    deposits: [],
     saveRule: raw.saveRule || null,
     family: fam,
     periodGoals: {

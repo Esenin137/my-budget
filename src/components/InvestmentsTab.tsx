@@ -1,18 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import {
-  Briefcase,
-  Building2,
-  Calendar,
-  Coins,
-  Landmark,
-  Pencil,
-  Plus,
-  RefreshCw,
-  Sparkles,
-  Trash2,
-  TrendingUp,
-  X,
-} from 'lucide-react';
+import { Pencil, RefreshCw, Trash2 } from 'lucide-react';
 import {
   AssetKind,
   BrokerId,
@@ -28,7 +15,6 @@ import {
   fetchMoexQuotesSafe,
   getAssetAnnualIncome,
   getAssetTotalValue,
-  getBrokerLabel,
   MARKET_INSTRUMENTS,
   MarketInstrument,
   MONTH_SHORT_RU,
@@ -46,28 +32,10 @@ interface InvestmentsTabProps {
   onShowToast: (msg: string) => void;
 }
 
-const ASSET_KIND_META: Record<
-  AssetKind,
-  { label: string; shortLabel: string; badgeClass: string; icon: React.ComponentType<{ className?: string }> }
-> = {
-  coupon: {
-    label: 'Купоны (ОФЗ / облигации)',
-    shortLabel: 'Купоны',
-    badgeClass: 'bg-cyan-500/20 text-cyan-200 border-cyan-400/35',
-    icon: Landmark,
-  },
-  dividend: {
-    label: 'Дивиденды (акции)',
-    shortLabel: 'Дивиденды',
-    badgeClass: 'bg-amber-500/20 text-amber-200 border-amber-400/35',
-    icon: TrendingUp,
-  },
-  deposit: {
-    label: 'Банковский вклад / Накопительный счёт',
-    shortLabel: 'Вклад / счёт',
-    badgeClass: 'bg-emerald-500/20 text-emerald-200 border-emerald-400/35',
-    icon: Coins,
-  },
+const KIND_LABELS: Record<AssetKind, string> = {
+  coupon: 'Купоны',
+  dividend: 'Дивиденды',
+  deposit: 'Вклад / счёт',
 };
 
 export default function InvestmentsTab({
@@ -99,7 +67,7 @@ export default function InvestmentsTab({
   const [formName, setFormName] = useState('');
   const [formQty, setFormQty] = useState('1');
   const [formPrice, setFormPrice] = useState('');
-  const [formYield, setFormYield] = useState('');
+  const [formYield, setFormYield] = useState('15.5');
   const [formMonths, setFormMonths] = useState<number[]>([6, 12]);
   const [showAssetForm, setShowAssetForm] = useState(false);
 
@@ -108,7 +76,6 @@ export default function InvestmentsTab({
   const [payoutFilter, setPayoutFilter] = useState<ScannerPayoutFilter>('all');
   const [scannerBudgetMode, setScannerBudgetMode] = useState<'free' | 'plan'>('free');
 
-  // Keep top inputs synced after async IndexedDB hydration or backup import
   useEffect(() => {
     setFreeCashInp(investments.freeCash ? String(investments.freeCash) : '');
     setMonthlyPlanInp(String(investments.monthlyPlan ?? 5000));
@@ -139,17 +106,18 @@ export default function InvestmentsTab({
     [strategy, payoutFilter, scannerBudget, summary.coveredMonths, livePrices]
   );
 
+  const allAssets = investments.assets || [];
   const filteredAssets = useMemo(() => {
-    const list = investments.assets || [];
-    if (assetFilter === 'all') return list;
-    return list.filter((a) => a.kind === assetFilter);
-  }, [investments.assets, assetFilter]);
+    if (assetFilter === 'all') return allAssets;
+    return allAssets.filter((a) => a.kind === assetFilter);
+  }, [allAssets, assetFilter]);
 
   const handleSelectBroker = (broker: BrokerId) => {
     onUpdateInvestments({ ...investments, broker });
   };
 
-  const handleSaveCashAndPlan = () => {
+  const handleSaveCashAndPlan = (e: React.FormEvent) => {
+    e.preventDefault();
     const nextFree = Math.max(0, parseNum(freeCashInp));
     const nextPlan = Math.max(0, parseNum(monthlyPlanInp));
     onUpdateInvestments({
@@ -158,7 +126,7 @@ export default function InvestmentsTab({
       monthlyPlan: nextPlan,
       brokerCustomName: brokerCustomInp.trim(),
     });
-    onShowToast('Параметры счёта и план пополнения сохранены.');
+    onShowToast('План пополнения и остаток сохранены.');
   };
 
   const handleSyncMoexQuotes = async () => {
@@ -167,10 +135,10 @@ export default function InvestmentsTab({
     setQuoteStatusNote(null);
     try {
       const result = await fetchMoexQuotesSafe(
-        (investments.assets || []).map((a) => ({ ticker: a.ticker, kind: a.kind }))
+        allAssets.map((a) => ({ ticker: a.ticker, kind: a.kind }))
       );
       if (result.offlineFallback || result.updatedCount === 0) {
-        setQuoteStatusNote('Мосбиржа сейчас недоступна — используются сохранённые офлайн-цены.');
+        setQuoteStatusNote('Мосбиржа недоступна — используются сохранённые офлайн-цены.');
         onShowToast('Офлайн-резерв: сохранены текущие цены активов.');
         return;
       }
@@ -179,7 +147,7 @@ export default function InvestmentsTab({
 
       let updatedAssetsCount = 0;
       const now = Date.now();
-      const nextAssets = (investments.assets || []).map((asset) => {
+      const nextAssets = allAssets.map((asset) => {
         if (asset.kind === 'deposit' || !asset.ticker) return asset;
         const fresh = result.prices[asset.ticker.toUpperCase()];
         if (fresh && fresh > 0) {
@@ -196,9 +164,9 @@ export default function InvestmentsTab({
       });
 
       setQuoteStatusNote(
-        `Обновлено котировок MOEX: ${result.updatedCount}${
-          updatedAssetsCount > 0 ? ` (в портфеле обновлено: ${updatedAssetsCount})` : ''
-        }.`
+        `Обновлено котировок Мосбиржи: ${result.updatedCount}${
+          updatedAssetsCount > 0 ? ` · в портфеле: ${updatedAssetsCount}` : ''
+        }`
       );
       onShowToast(`Котировки Мосбиржи обновлены (${result.updatedCount}).`);
     } catch {
@@ -219,7 +187,9 @@ export default function InvestmentsTab({
     setFormMonths(kind === 'deposit' ? [] : kind === 'coupon' ? [6, 12] : [7]);
   };
 
-  const handleApplyPreset = (inst: MarketInstrument) => {
+  const handleApplyPreset = (ticker: string) => {
+    const inst = MARKET_INSTRUMENTS.find((i) => i.ticker === ticker);
+    if (!inst) return;
     const p = livePrices[inst.ticker.toUpperCase()] || inst.fallbackPrice;
     setFormKind(inst.kind);
     setFormTicker(inst.ticker);
@@ -260,7 +230,9 @@ export default function InvestmentsTab({
       return;
     }
     if (!(priceVal > 0)) {
-      onShowToast(formKind === 'deposit' ? 'Укажите сумму вклада больше нуля.' : 'Укажите цену больше нуля.');
+      onShowToast(
+        formKind === 'deposit' ? 'Укажите сумму вклада больше нуля.' : 'Укажите цену больше нуля.'
+      );
       return;
     }
     if (formKind !== 'deposit' && !(qtyVal > 0)) {
@@ -282,11 +254,11 @@ export default function InvestmentsTab({
     };
 
     const nextAssets = editingId
-      ? (investments.assets || []).map((a) => (a.id === editingId ? payload : a))
-      : [payload, ...(investments.assets || [])];
+      ? allAssets.map((a) => (a.id === editingId ? payload : a))
+      : [payload, ...allAssets];
 
     onUpdateInvestments({ ...investments, assets: nextAssets });
-    onShowToast(editingId ? 'Позиция обновлена.' : `Добавлено в «Мои активы»: ${cleanName}`);
+    onShowToast(editingId ? 'Позиция обновлена.' : `Добавлено: ${cleanName}`);
     setShowAssetForm(false);
     resetAssetForm(formKind);
   };
@@ -294,19 +266,19 @@ export default function InvestmentsTab({
   const handleDeleteAsset = (id: number) => {
     onUpdateInvestments({
       ...investments,
-      assets: (investments.assets || []).filter((a) => a.id !== id),
+      assets: allAssets.filter((a) => a.id !== id),
     });
-    onShowToast('Позиция удалена из портфеля.');
+    onShowToast('Позиция удалена.');
   };
 
   const handleQuickAddFromScanner = (inst: MarketInstrument, units: number, unitPrice: number) => {
     const qtyToAdd = Math.max(inst.lotSize, units);
-    const existing = (investments.assets || []).find(
+    const existing = allAssets.find(
       (a) => a.kind === inst.kind && a.ticker.toUpperCase() === inst.ticker.toUpperCase()
     );
 
     const nextAssets = existing
-      ? (investments.assets || []).map((a) =>
+      ? allAssets.map((a) =>
           a.id === existing.id
             ? {
                 ...a,
@@ -329,7 +301,7 @@ export default function InvestmentsTab({
             moexBoard: inst.moexBoard,
             lastUpdatedAt: Date.now(),
           },
-          ...(investments.assets || []),
+          ...allAssets,
         ];
 
     const spent = Math.round(qtyToAdd * unitPrice);
@@ -344,170 +316,129 @@ export default function InvestmentsTab({
     onShowToast(`Добавлено: ${inst.name} × ${qtyToAdd} шт.`);
   };
 
+  const totalDepositsCombined = summary.bankDepositsTotal + summary.budgetDepositsTotal;
+
   return (
     <>
-      {/* 1. БРОКЕР, КАПИТАЛ, ПЛАН ИИС И МОСБИРЖА */}
+      {/* ФИРМЕННЫЕ 3D-ПЛИТКИ СВОДКИ — В ЕДИНОМ СТИЛЕ С «БЮДЖЕТОМ» */}
+      <div className="summary-strip">
+        <div className="sum-card card-inv-main" role="region" aria-label="Общий капитал">
+          <div>
+            <div className="lbl">Весь капитал:</div>
+            <div className="val tabular-nums">{formatMoney(summary.grandCapitalTotal)}</div>
+          </div>
+          <div className="safe-pill tabular-nums">
+            {summary.monthlyPassiveIncome > 0
+              ? `Пассивный доход: ~${formatMoney(summary.monthlyPassiveIncome)}/мес`
+              : 'Добавьте активы или вклады ниже'}
+          </div>
+        </div>
+
+        <div className="sum-card card-inv-sec" role="region" aria-label="Портфель и вклады">
+          <div className="lbl">
+            {summary.investedSecuritiesTotal > 0 ? 'Бумаги и вклады:' : 'Вклады и накопления:'}
+          </div>
+          <div className="val tabular-nums">
+            {formatMoney(summary.investedSecuritiesTotal + totalDepositsCombined)}
+          </div>
+        </div>
+
+        <div className="sum-card card-inv-iis" role="region" aria-label="Вычет ИИС 13%">
+          <div className="lbl">Вычет ИИС (13%):</div>
+          <div className="val tabular-nums">+{formatMoney(summary.iisDeduction13)}</div>
+        </div>
+      </div>
+
+      {/* 1. БРОКЕР, ПЛАН ИИС И КОТИРОВКИ МОСБИРЖИ */}
       <GlassSection
         id="sec-inv-overview"
-        title="💼 Платформа, капитал и ИИС (13%)"
-        helpText="Выберите своего брокера, задайте свободный остаток и план ежемесячного пополнения ИИС — приложение автоматически посчитает вычет 13% НДФЛ и обновит котировки с Мосбиржи (iss.moex.com)."
+        title="🏛️ Брокер, план ИИС и Мосбиржа"
+        helpText="Выберите своего брокера, задайте свободные деньги на счёте и ежемесячный план пополнения ИИС для расчёта вычета 13% НДФЛ и подбора бумаг."
         collapsed={collapsedSecs.includes('sec-inv-overview')}
         onToggleCollapse={onToggleSec}
       >
-        {/* Итоговая сводка капитала */}
-        <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-          <div className="rounded-2xl bg-[var(--fld)] border border-amber-400/30 p-2.5">
-            <div className="text-[10px] font-bold uppercase tracking-wider text-amber-200/80">
-              Весь капитал
-            </div>
-            <div className="text-base font-extrabold text-white font-num mt-0.5">
-              {formatMoney(summary.grandCapitalTotal)}
-            </div>
-            <div className="text-[10px] text-slate-400 mt-0.5">
-              Активы + вклады + кэш
-            </div>
-          </div>
+        <form onSubmit={handleSaveCashAndPlan} className="space-y-2.5">
+          <label className="fin-sub block">
+            Брокер / Платформа
+            <select
+              className="fin-select w-full mt-1"
+              value={investments.broker}
+              onChange={(e) => handleSelectBroker(e.target.value as BrokerId)}
+            >
+              {BROKER_OPTIONS.map((b) => (
+                <option key={b.id} value={b.id}>
+                  {b.name}
+                </option>
+              ))}
+            </select>
+          </label>
 
-          <div className="rounded-2xl bg-[var(--fld)] border border-cyan-400/25 p-2.5">
-            <div className="text-[10px] font-bold uppercase tracking-wider text-cyan-200/80">
-              Купоны + Акции
-            </div>
-            <div className="text-base font-extrabold text-white font-num mt-0.5">
-              {formatMoney(summary.investedSecuritiesTotal)}
-            </div>
-            <div className="text-[10px] text-slate-400 mt-0.5">
-              ОФЗ: {formatMoney(summary.couponsTotal)}
-            </div>
-          </div>
-
-          <div className="rounded-2xl bg-[var(--fld)] border border-emerald-400/25 p-2.5">
-            <div className="text-[10px] font-bold uppercase tracking-wider text-emerald-200/80">
-              Пассивный доход
-            </div>
-            <div className="text-base font-extrabold text-emerald-300 font-num mt-0.5">
-              ~{formatMoney(summary.monthlyPassiveIncome)}/м
-            </div>
-            <div className="text-[10px] text-slate-400 mt-0.5">
-              {formatMoney(summary.annualPassiveIncome)}/год
-            </div>
-          </div>
-
-          <div className="rounded-2xl bg-[var(--fld)] border border-violet-400/30 p-2.5">
-            <div className="text-[10px] font-bold uppercase tracking-wider text-violet-200/80">
-              Вычет ИИС 13%
-            </div>
-            <div className="text-base font-extrabold text-violet-200 font-num mt-0.5">
-              +{formatMoney(summary.iisDeduction13)}
-            </div>
-            <div className="text-[10px] text-slate-400 mt-0.5">
-              При {formatMoney(summary.annualIisContribution)}/год
-            </div>
-          </div>
-        </div>
-
-        {/* Выбор брокера */}
-        <div className="space-y-1.5">
-          <div className="flex items-center gap-1.5 text-xs font-extrabold text-white">
-            <Building2 className="w-3.5 h-3.5 text-amber-300" />
-            <span>Брокер / Платформа: {getBrokerLabel(investments.broker, investments.brokerCustomName)}</span>
-          </div>
-          <div className="flex flex-wrap gap-1.5">
-            {BROKER_OPTIONS.map((b) => {
-              const active = investments.broker === b.id;
-              return (
-                <button
-                  key={b.id}
-                  type="button"
-                  onClick={() => handleSelectBroker(b.id)}
-                  className={`px-2.5 py-1.5 rounded-xl text-xs font-bold border transition cursor-pointer ${
-                    active
-                      ? 'bg-amber-500/20 border-amber-400/60 text-amber-100'
-                      : 'bg-[var(--fld)] border-[var(--line)] text-slate-300 hover:border-white/25'
-                  }`}
-                >
-                  {b.shortName}
-                </button>
-              );
-            })}
-          </div>
           {investments.broker === 'other' && (
             <input
               type="text"
+              className="fin-input w-full"
               value={brokerCustomInp}
               onChange={(e) => setBrokerCustomInp(e.target.value)}
               placeholder="Название вашего брокера"
-              className="fin-input w-full text-xs"
             />
           )}
-        </div>
 
-        {/* Свободные деньги и план пополнения */}
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-          <div>
-            <label className="text-[11px] font-bold text-slate-300 block mb-1">
-              Свободные деньги на счёте (₽)
+          <div className="grid grid-cols-2 gap-2">
+            <label className="fin-sub block">
+              Свободно на счёте, ₽
+              <input
+                type="text"
+                inputMode="decimal"
+                className="fin-input w-full mt-1 tabular-nums"
+                value={freeCashInp}
+                onChange={(e) => setFreeCashInp(e.target.value)}
+                placeholder="0"
+              />
             </label>
-            <input
-              type="text"
-              inputMode="decimal"
-              value={freeCashInp}
-              onChange={(e) => setFreeCashInp(e.target.value)}
-              placeholder="0"
-              className="fin-input w-full"
-            />
-          </div>
-          <div>
-            <label className="text-[11px] font-bold text-slate-300 block mb-1">
-              План пополнения ИИС в месяц (₽)
+            <label className="fin-sub block">
+              План ИИС / мес, ₽
+              <input
+                type="text"
+                inputMode="decimal"
+                className="fin-input w-full mt-1 tabular-nums"
+                value={monthlyPlanInp}
+                onChange={(e) => setMonthlyPlanInp(e.target.value)}
+                placeholder="5000"
+              />
             </label>
-            <input
-              type="text"
-              inputMode="decimal"
-              value={monthlyPlanInp}
-              onChange={(e) => setMonthlyPlanInp(e.target.value)}
-              placeholder="5000"
-              className="fin-input w-full"
-            />
           </div>
-        </div>
 
-        <div className="flex flex-wrap gap-2">
-          <button
-            type="button"
-            onClick={handleSaveCashAndPlan}
-            className="fin-btn sm flex-1"
-          >
-            Сохранить план и остаток
-          </button>
-          <button
-            type="button"
-            disabled={syncingQuotes}
-            onClick={() => void handleSyncMoexQuotes()}
-            className="fin-btn ghost sm flex-1 flex items-center justify-center gap-1.5"
-          >
-            <RefreshCw className={`w-3.5 h-3.5 ${syncingQuotes ? 'animate-spin' : ''}`} />
-            <span>{syncingQuotes ? 'Загрузка MOEX...' : 'Обновить котировки с Мосбиржи'}</span>
-          </button>
-        </div>
+          <div className="flex gap-1.5 flex-wrap">
+            <button type="submit" className="fin-btn sm flex-1">
+              Сохранить план
+            </button>
+            <button
+              type="button"
+              disabled={syncingQuotes}
+              onClick={() => void handleSyncMoexQuotes()}
+              className="fin-btn ghost sm flex-1"
+            >
+              <RefreshCw className={`w-3.5 h-3.5 ${syncingQuotes ? 'animate-spin' : ''}`} />
+              <span>{syncingQuotes ? 'Загрузка...' : 'Котировки MOEX'}</span>
+            </button>
+          </div>
+        </form>
 
-        {/* Расчёт вычета ИИС + статус котировок */}
-        <div className="rounded-xl bg-black/25 border border-white/10 px-3 py-2 text-[11px] text-slate-300 space-y-1">
+        <div className="pt-2 border-t border-[var(--line)] space-y-1 fin-sub tabular-nums">
           <div>
-            🏛️ <b>Налоговый вычет ИИС:</b> пополнение{' '}
-            <b className="text-white">{formatMoney(investments.monthlyPlan)}/мес</b> ={' '}
-            <b className="text-white">{formatMoney(summary.annualIisContribution)}/год</b> → возврат
-            13% НДФЛ <b className="text-emerald-300">+{formatMoney(summary.iisDeduction13)}</b>{' '}
-            (лимит базы 400 000 ₽/год → до 52 000 ₽).
+            Вычет ИИС 13%: {formatMoney(investments.monthlyPlan)}/мес ({formatMoney(summary.annualIisContribution)}/год) →{' '}
+            <b className="text-[var(--ink)]">+{formatMoney(summary.iisDeduction13)}</b> (до 52 000 ₽)
           </div>
-          {summary.budgetDepositsTotal > 0 && (
-            <div className="text-slate-400">
-              💡 В общем капитале также учтены вклады из раздела «Бюджет»: {formatMoney(summary.budgetDepositsTotal)}.
+          {summary.annualPassiveIncome > 0 && (
+            <div>
+              Прогноз выплат: ~<b className="text-emerald-400">{formatMoney(summary.monthlyPassiveIncome)}/мес</b> ·{' '}
+              {formatMoney(summary.annualPassiveIncome)}/год
             </div>
           )}
           {(quoteStatusNote || investments.lastQuotesSyncAt) && (
-            <div className="text-cyan-200/90">
+            <div>
               {quoteStatusNote ||
-                `Последнее обновление MOEX: ${new Date(investments.lastQuotesSyncAt!).toLocaleString('ru-RU', {
+                `MOEX обновлён: ${new Date(investments.lastQuotesSyncAt!).toLocaleString('ru-RU', {
                   day: '2-digit',
                   month: '2-digit',
                   hour: '2-digit',
@@ -518,43 +449,177 @@ export default function InvestmentsTab({
         </div>
       </GlassSection>
 
-      {/* 2. МОИ АКТИВЫ (3 ТИПА: КУПОНЫ, ДИВИДЕНДЫ, БАНКОВСКИЙ ВКЛАД) */}
+      {/* 2. МОИ АКТИВЫ И ВКЛАДЫ (КУПОНЫ, ДИВИДЕНДЫ, БАНКОВСКИЙ ВКЛАД) */}
       <GlassSection
         id="sec-inv-assets"
-        title={`📊 Мои активы (${(investments.assets || []).length})`}
-        helpText="Учитывайте 3 типа позиций: купонные облигации (ОФЗ), дивидендные акции и банковские вклады / накопительные счета (вклады не привязываются к купонам/дивидендам и идут общей суммой в капитал)."
+        title="💼 Мои активы и вклады"
+        helpText="Единый список вашего капитала: купонные облигации (ОФЗ), дивидендные акции и банковские вклады / накопительные счета. Вклады учитываются общей суммой без привязки к календарю купонов."
+        rightExtra={
+          allAssets.length > 0 ? <span className="fin-sub tabular-nums">({allAssets.length})</span> : null
+        }
         collapsed={collapsedSecs.includes('sec-inv-assets')}
         onToggleCollapse={onToggleSec}
-        rightExtra={
+      >
+        {/* Сегментированный фильтр (в стиле Бюджета) */}
+        <div className="grid grid-cols-4 gap-1 p-1 rounded-xl bg-[var(--fld)] border border-[var(--line)]">
+          {(
+            [
+              ['all', 'Все'],
+              ['coupon', 'Купоны'],
+              ['dividend', 'Акции'],
+              ['deposit', 'Вклады'],
+            ] as ['all' | AssetKind, string][]
+          ).map(([id, label]) => (
+            <button
+              key={id}
+              type="button"
+              onClick={() => setAssetFilter(id)}
+              className={`py-1.5 rounded-lg text-xs font-bold cursor-pointer transition whitespace-nowrap ${
+                assetFilter === id
+                  ? 'bg-[var(--acc)] text-[var(--accInk)] shadow'
+                  : 'text-[var(--mute)] hover:text-white'
+              }`}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+
+        {/* Список активов и вкладов */}
+        <div className="space-y-2 max-h-72 overflow-y-auto pr-0.5">
+          {filteredAssets.length === 0 ? (
+            <div className="fin-sub py-1">
+              Пока нет позиций в этой категории — добавьте актив или вклад ниже.
+            </div>
+          ) : (
+            filteredAssets.map((asset) => {
+              const total = getAssetTotalValue(asset);
+              const annualInc = getAssetAnnualIncome(asset);
+
+              if (asset.kind === 'deposit') {
+                return (
+                  <div key={asset.id} className="tx-tile dep">
+                    <div className="flex items-center gap-2.5 min-w-0">
+                      <span className="w-10 h-10 rounded-xl bg-black/15 flex items-center justify-center text-lg shrink-0">
+                        🏛️
+                      </span>
+                      <div className="min-w-0">
+                        <div className="font-extrabold text-sm truncate">
+                          {asset.name}
+                          {asset.annualYieldPct > 0 ? ` · ${asset.annualYieldPct}%` : ''}
+                        </div>
+                        <div className="text-xs opacity-80 font-semibold tabular-nums truncate">
+                          {formatMoney(total)}
+                          {annualInc > 0 ? ` · ~${formatMoney(Math.round(annualInc / 12))}/мес` : ' · Вклад / счёт'}
+                        </div>
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-0.5 shrink-0">
+                      <button
+                        type="button"
+                        onClick={() => handleStartEdit(asset)}
+                        className="p-2 text-[#1F1300] hover:opacity-70 cursor-pointer"
+                        title="Изменить"
+                      >
+                        <Pencil className="w-3.5 h-3.5" />
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleDeleteAsset(asset.id)}
+                        className="p-2 text-[#1F1300] hover:opacity-70 cursor-pointer"
+                        title="Удалить"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                  </div>
+                );
+              }
+
+              const monthsText =
+                asset.payoutMonths?.length
+                  ? asset.payoutMonths.map((m) => MONTH_SHORT_RU[m - 1]).join(', ')
+                  : '';
+
+              return (
+                <div key={asset.id} className="tx-tile">
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-baseline justify-between gap-2">
+                      <b className="truncate text-[var(--ink)]">{asset.name}</b>
+                      <b className="tabular-nums shrink-0 text-[var(--ink)]">{formatMoney(total)}</b>
+                    </div>
+                    <div className="fin-sub tabular-nums mt-0.5 truncate">
+                      {[
+                        KIND_LABELS[asset.kind],
+                        asset.ticker || null,
+                        `${asset.qty} шт × ${formatMoney(asset.price)}`,
+                        asset.annualYieldPct > 0 ? `${asset.annualYieldPct}%` : null,
+                      ]
+                        .filter(Boolean)
+                        .join(' · ')}
+                    </div>
+                    {(monthsText || annualInc > 0) && (
+                      <div className="fin-sub tabular-nums mt-0.5 truncate">
+                        {[
+                          annualInc > 0 ? `~${formatMoney(annualInc)}/год` : null,
+                          monthsText ? `выплаты: ${monthsText}` : null,
+                        ]
+                          .filter(Boolean)
+                          .join(' · ')}
+                      </div>
+                    )}
+                  </div>
+                  <div className="flex items-center gap-0.5 shrink-0">
+                    <button
+                      type="button"
+                      onClick={() => handleStartEdit(asset)}
+                      className="p-2 text-slate-400 hover:text-amber-300 cursor-pointer"
+                      title="Изменить"
+                    >
+                      <Pencil className="w-3.5 h-3.5" />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleDeleteAsset(asset.id)}
+                      className="p-2 text-slate-400 hover:text-rose-400 cursor-pointer"
+                      title="Удалить"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                </div>
+              );
+            })
+          )}
+        </div>
+
+        {/* Форма добавления / редактирования (чистая, без вложенных рамок) */}
+        <div className="pt-2 border-t border-[var(--line)]">
           <button
             type="button"
             onClick={() => {
-              resetAssetForm(assetFilter === 'all' ? 'coupon' : assetFilter);
-              setShowAssetForm((v) => !v);
+              if (showAssetForm) {
+                setShowAssetForm(false);
+                resetAssetForm(formKind);
+              } else {
+                resetAssetForm(assetFilter === 'all' ? 'coupon' : assetFilter);
+                setShowAssetForm(true);
+              }
             }}
-            className="px-2.5 py-1 rounded-lg bg-amber-500/20 border border-amber-400/40 text-[11px] font-bold text-amber-200 hover:bg-amber-500/30 cursor-pointer flex items-center gap-1"
+            className="fin-btn ghost sm w-full"
           >
-            {showAssetForm ? <X className="w-3 h-3" /> : <Plus className="w-3 h-3" />}
-            <span>{showAssetForm ? 'Скрыть' : 'Добавить'}</span>
+            {showAssetForm
+              ? 'Скрыть форму'
+              : editingId
+              ? 'Редактировать позицию'
+              : '+ Добавить актив или вклад'}
           </button>
-        }
-      >
-        {/* Форма добавления / редактирования позиции */}
-        {showAssetForm && (
-          <form
-            onSubmit={handleSaveAsset}
-            className="rounded-2xl bg-[var(--fld)] border border-amber-400/35 p-3 space-y-2.5"
-          >
-            <div className="text-xs font-extrabold text-white">
-              {editingId ? '✏️ Редактировать позицию' : '➕ Новая позиция в портфеле'}
-            </div>
 
-            {/* Выбор одного из 3 типов */}
-            <div className="grid grid-cols-3 gap-1.5">
-              {(['coupon', 'dividend', 'deposit'] as AssetKind[]).map((k) => {
-                const active = formKind === k;
-                const Icon = ASSET_KIND_META[k].icon;
-                return (
+          {showAssetForm && (
+            <form onSubmit={handleSaveAsset} className="space-y-2.5 mt-3">
+              {/* 3 типа позиций */}
+              <div className="grid grid-cols-3 gap-1 p-1 rounded-xl bg-[var(--fld)] border border-[var(--line)]">
+                {(['coupon', 'dividend', 'deposit'] as AssetKind[]).map((k) => (
                   <button
                     key={k}
                     type="button"
@@ -571,329 +636,203 @@ export default function InvestmentsTab({
                         setFormMonths([7]);
                       }
                     }}
-                    className={`py-2 px-1.5 rounded-xl border text-[11px] font-bold flex flex-col items-center gap-1 cursor-pointer transition ${
-                      active
-                        ? 'bg-amber-500/20 border-amber-400/60 text-white'
-                        : 'bg-black/20 border-white/10 text-slate-300 hover:border-white/25'
+                    className={`py-1.5 rounded-lg text-xs font-bold cursor-pointer transition whitespace-nowrap ${
+                      formKind === k
+                        ? 'bg-[var(--acc)] text-[var(--accInk)] shadow'
+                        : 'text-[var(--mute)] hover:text-white'
                     }`}
                   >
-                    <Icon className="w-3.5 h-3.5" />
-                    <span className="text-center leading-tight">{ASSET_KIND_META[k].shortLabel}</span>
+                    {KIND_LABELS[k]}
                   </button>
-                );
-              })}
-            </div>
-
-            {/* Быстрый выбор популярных бумаг MOEX */}
-            {formKind !== 'deposit' && (
-              <div className="space-y-1">
-                <div className="text-[10px] text-slate-400 font-semibold">
-                  Быстрый выбор с Мосбиржи:
-                </div>
-                <div className="flex flex-wrap gap-1">
-                  {MARKET_INSTRUMENTS.filter((i) => i.kind === formKind)
-                    .slice(0, 6)
-                    .map((inst) => (
-                      <button
-                        key={inst.ticker}
-                        type="button"
-                        onClick={() => handleApplyPreset(inst)}
-                        className="px-2 py-1 rounded-lg bg-white/6 hover:bg-white/14 border border-white/12 text-[11px] font-semibold text-slate-200 cursor-pointer transition"
-                      >
-                        {inst.name}
-                      </button>
-                    ))}
-                </div>
+                ))}
               </div>
-            )}
 
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-              <input
-                type="text"
-                value={formName}
-                onChange={(e) => setFormName(e.target.value)}
-                placeholder={
-                  formKind === 'coupon'
-                    ? 'Название (напр. ОФЗ 26243)'
-                    : formKind === 'dividend'
-                    ? 'Название (напр. Сбербанк)'
-                    : 'Название вклада / счёта (напр. Накопительный Сбер)'
-                }
-                className="fin-input w-full text-xs"
-              />
+              {/* Быстрая подстановка популярной бумаги MOEX */}
               {formKind !== 'deposit' && (
+                <select
+                  className="fin-select w-full"
+                  value=""
+                  onChange={(e) => {
+                    if (e.target.value) handleApplyPreset(e.target.value);
+                  }}
+                >
+                  <option value="">Быстро выбрать бумагу Мосбиржи...</option>
+                  {MARKET_INSTRUMENTS.filter((i) => i.kind === formKind).map((inst) => (
+                    <option key={inst.ticker} value={inst.ticker}>
+                      {inst.name} ({inst.ticker}) · ~{inst.annualYieldPct}%
+                    </option>
+                  ))}
+                </select>
+              )}
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
                 <input
                   type="text"
-                  value={formTicker}
-                  onChange={(e) => setFormTicker(e.target.value.toUpperCase())}
-                  placeholder={formKind === 'coupon' ? 'Тикер MOEX (SU26243RMFS4)' : 'Тикер MOEX (SBER)'}
-                  className="fin-input w-full text-xs"
+                  className="fin-input w-full"
+                  value={formName}
+                  onChange={(e) => setFormName(e.target.value)}
+                  placeholder={
+                    formKind === 'coupon'
+                      ? 'ОФЗ 26243'
+                      : formKind === 'dividend'
+                      ? 'Сбербанк'
+                      : 'Накопительный счёт / Вклад'
+                  }
                 />
-              )}
-            </div>
+                {formKind !== 'deposit' && (
+                  <input
+                    type="text"
+                    className="fin-input w-full"
+                    value={formTicker}
+                    onChange={(e) => setFormTicker(e.target.value.toUpperCase())}
+                    placeholder={formKind === 'coupon' ? 'Тикер (SU26243RMFS4)' : 'Тикер (SBER)'}
+                  />
+                )}
+              </div>
 
-            <div className="grid grid-cols-3 gap-2">
-              {formKind !== 'deposit' && (
-                <div>
-                  <label className="text-[10px] text-slate-400 block mb-0.5">Кол-во (шт)</label>
+              <div className="grid grid-cols-3 gap-2">
+                {formKind !== 'deposit' && (
+                  <label className="fin-sub block">
+                    Кол-во, шт
+                    <input
+                      type="text"
+                      inputMode="decimal"
+                      className="fin-input w-full mt-1 tabular-nums"
+                      value={formQty}
+                      onChange={(e) => setFormQty(e.target.value)}
+                      placeholder="1"
+                    />
+                  </label>
+                )}
+                <label className={`fin-sub block ${formKind === 'deposit' ? 'col-span-2' : ''}`}>
+                  {formKind === 'deposit' ? 'Сумма вклада, ₽' : 'Цена, ₽'}
                   <input
                     type="text"
                     inputMode="decimal"
-                    value={formQty}
-                    onChange={(e) => setFormQty(e.target.value)}
-                    placeholder="1"
-                    className="fin-input w-full text-xs"
+                    className="fin-input w-full mt-1 tabular-nums"
+                    value={formPrice}
+                    onChange={(e) => setFormPrice(e.target.value)}
+                    placeholder={formKind === 'deposit' ? '100000' : '745'}
                   />
+                </label>
+                <label className="fin-sub block">
+                  %/год
+                  <input
+                    type="text"
+                    inputMode="decimal"
+                    className="fin-input w-full mt-1 tabular-nums"
+                    value={formYield}
+                    onChange={(e) => setFormYield(e.target.value)}
+                    placeholder="15.5"
+                  />
+                </label>
+              </div>
+
+              {formKind !== 'deposit' ? (
+                <div className="space-y-1">
+                  <div className="fin-sub">Месяцы выплат:</div>
+                  <div className="grid grid-cols-6 gap-1">
+                    {MONTH_SHORT_RU.map((lbl, idx) => {
+                      const m = idx + 1;
+                      const active = formMonths.includes(m);
+                      return (
+                        <button
+                          key={m}
+                          type="button"
+                          onClick={() => toggleFormMonth(m)}
+                          className={`py-1.5 rounded-lg text-[11px] font-bold border cursor-pointer transition ${
+                            active
+                              ? 'bg-[var(--acc)] text-[var(--accInk)] border-transparent'
+                              : 'bg-[var(--fld)] border-[var(--line)] text-[var(--mute)] hover:text-white'
+                          }`}
+                        >
+                          {lbl}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              ) : (
+                <div className="fin-sub">
+                  Вклад учитывается общей суммой в капитале без привязки к купонам и дивидендам.
                 </div>
               )}
-              <div className={formKind === 'deposit' ? 'col-span-2' : ''}>
-                <label className="text-[10px] text-slate-400 block mb-0.5">
-                  {formKind === 'deposit' ? 'Сумма вклада (₽)' : 'Цена за 1 шт (₽)'}
-                </label>
-                <input
-                  type="text"
-                  inputMode="decimal"
-                  value={formPrice}
-                  onChange={(e) => setFormPrice(e.target.value)}
-                  placeholder={formKind === 'deposit' ? '100000' : '745'}
-                  className="fin-input w-full text-xs"
-                />
-              </div>
-              <div>
-                <label className="text-[10px] text-slate-400 block mb-0.5">Ставка %/год</label>
-                <input
-                  type="text"
-                  inputMode="decimal"
-                  value={formYield}
-                  onChange={(e) => setFormYield(e.target.value)}
-                  placeholder="15.5"
-                  className="fin-input w-full text-xs"
-                />
-              </div>
-            </div>
 
-            {/* Месяцы выплат (только для купонов и дивидендов; вклад не привязывается) */}
-            {formKind !== 'deposit' ? (
-              <div className="space-y-1">
-                <div className="text-[10px] text-slate-400 font-semibold">
-                  Месяцы выплат (для календаря «Ежемесячной зарплаты»):
-                </div>
-                <div className="grid grid-cols-6 gap-1">
-                  {MONTH_SHORT_RU.map((lbl, idx) => {
-                    const m = idx + 1;
-                    const active = formMonths.includes(m);
-                    return (
-                      <button
-                        key={m}
-                        type="button"
-                        onClick={() => toggleFormMonth(m)}
-                        className={`py-1 rounded-lg text-[10px] font-bold border cursor-pointer transition ${
-                          active
-                            ? 'bg-emerald-500/25 border-emerald-400/60 text-emerald-100'
-                            : 'bg-black/25 border-white/10 text-slate-400 hover:text-white'
-                        }`}
-                      >
-                        {lbl}
-                      </button>
-                    );
-                  })}
-                </div>
-              </div>
-            ) : (
-              <div className="text-[11px] text-emerald-200/80 bg-emerald-500/10 border border-emerald-400/25 rounded-xl px-2.5 py-1.5">
-                Банковский вклад / накопительный счёт не привязывается к купонам и дивидендам — учитывается общей суммой в капитале.
-              </div>
-            )}
-
-            <div className="flex gap-2 pt-1">
-              <button type="submit" className="fin-btn sm flex-1">
-                {editingId ? 'Сохранить изменения' : 'Добавить актив'}
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  setShowAssetForm(false);
-                  resetAssetForm(formKind);
-                }}
-                className="fin-btn ghost sm"
-              >
-                Отмена
-              </button>
-            </div>
-          </form>
-        )}
-
-        {/* Фильтр типов активов */}
-        <div className="flex flex-wrap gap-1.5">
-          {(
-            [
-              ['all', `Все (${(investments.assets || []).length})`],
-              ['coupon', `Купоны (${(investments.assets || []).filter((a) => a.kind === 'coupon').length})`],
-              ['dividend', `Дивиденды (${(investments.assets || []).filter((a) => a.kind === 'dividend').length})`],
-              ['deposit', `Вклады (${(investments.assets || []).filter((a) => a.kind === 'deposit').length})`],
-            ] as ['all' | AssetKind, string][]
-          ).map(([id, label]) => (
-            <button
-              key={id}
-              type="button"
-              onClick={() => setAssetFilter(id)}
-              className={`px-2.5 py-1 rounded-xl text-[11px] font-bold border cursor-pointer transition ${
-                assetFilter === id
-                  ? 'bg-white/15 border-white/30 text-white'
-                  : 'bg-[var(--fld)] border-[var(--line)] text-slate-300 hover:text-white'
-              }`}
-            >
-              {label}
-            </button>
-          ))}
-        </div>
-
-        {/* Список активов пользователя */}
-        {filteredAssets.length === 0 ? (
-          <div className="rounded-2xl bg-[var(--fld)] border border-dashed border-white/15 p-4 text-center space-y-2">
-            <Briefcase className="w-6 h-6 text-slate-400 mx-auto" />
-            <div className="text-xs font-bold text-slate-200">
-              В этой категории пока нет активов
-            </div>
-            <div className="fin-sub">
-              Нажмите «Добавить» выше или выберите бумаги в «Сканере рынка» ниже — можно добавить ОФЗ, акции или банковский вклад.
-            </div>
-          </div>
-        ) : (
-          <div className="space-y-2">
-            {filteredAssets.map((asset) => {
-              const total = getAssetTotalValue(asset);
-              const annualInc = getAssetAnnualIncome(asset);
-              const meta = ASSET_KIND_META[asset.kind];
-              const monthsText =
-                asset.kind !== 'deposit' && asset.payoutMonths?.length
-                  ? asset.payoutMonths.map((m) => MONTH_SHORT_RU[m - 1]).join(', ')
-                  : '';
-
-              return (
-                <div
-                  key={asset.id}
-                  className="rounded-2xl bg-[var(--fld)] border border-[var(--line)] p-3 flex items-start justify-between gap-2"
+              <div className="flex gap-1.5">
+                <button type="submit" className="fin-btn sm flex-1">
+                  {editingId ? 'Сохранить изменения' : 'Сохранить позицию'}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowAssetForm(false);
+                    resetAssetForm(formKind);
+                  }}
+                  className="fin-btn ghost sm"
                 >
-                  <div className="min-w-0 flex-1 space-y-1">
-                    <div className="flex items-center gap-1.5 flex-wrap">
-                      <span className="text-xs font-extrabold text-white">{asset.name}</span>
-                      {asset.ticker && (
-                        <span className="text-[10px] font-mono font-bold px-1.5 py-0.5 rounded bg-white/10 text-slate-200">
-                          {asset.ticker}
-                        </span>
-                      )}
-                      <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded border ${meta.badgeClass}`}>
-                        {meta.shortLabel}
-                      </span>
-                    </div>
-
-                    <div className="text-[11px] text-slate-300 flex flex-wrap gap-x-3 gap-y-0.5">
-                      {asset.kind === 'deposit' ? (
-                        <span>Общая сумма в капитале</span>
-                      ) : (
-                        <span>
-                          {asset.qty} шт × {formatMoney(asset.price)}
-                        </span>
-                      )}
-                      {asset.annualYieldPct > 0 && (
-                        <span className="text-emerald-300 font-semibold">
-                          {asset.annualYieldPct}% год. (~{formatMoney(annualInc)}/год)
-                        </span>
-                      )}
-                    </div>
-
-                    {monthsText && (
-                      <div className="text-[10px] text-slate-400">
-                        Выплаты: {monthsText}
-                      </div>
-                    )}
-                  </div>
-
-                  <div className="flex flex-col items-end gap-1.5 shrink-0">
-                    <div className="text-sm font-extrabold text-white font-num">
-                      {formatMoney(total)}
-                    </div>
-                    <div className="flex items-center gap-1">
-                      <button
-                        type="button"
-                        onClick={() => handleStartEdit(asset)}
-                        className="p-1.5 rounded-lg bg-white/6 hover:bg-white/14 text-slate-200 cursor-pointer"
-                        title="Редактировать"
-                      >
-                        <Pencil className="w-3.5 h-3.5" />
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => handleDeleteAsset(asset.id)}
-                        className="p-1.5 rounded-lg bg-rose-500/10 hover:bg-rose-500/20 text-rose-300 cursor-pointer"
-                        title="Удалить"
-                      >
-                        <Trash2 className="w-3.5 h-3.5" />
-                      </button>
-                    </div>
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        )}
+                  Отмена
+                </button>
+              </div>
+            </form>
+          )}
+        </div>
       </GlassSection>
 
-      {/* 3. СКАНЕР РЫНКА (СТРАТЕГИИ, ФИЛЬТР ВЫПЛАТ И ДОПЛАТА ДО 1 000 ₽) */}
+      {/* 3. СКАНЕР РЫНКА И КАЛЕНДАРЬ ВЫПЛАТ */}
       <GlassSection
         id="sec-inv-scanner"
-        title="🔎 Сканер рынка и подбор покупок"
-        helpText="Подбирает ОФЗ и дивидендные акции под ваш свободный остаток или план пополнения. При погрешности бюджета до 1 000 ₽ подсказывает, если небольшая доплата заметно увеличивает доходность или закрывает пустой месяц выплат."
+        title="🔎 Сканер рынка и выплаты"
+        helpText="Подбирает ОФЗ и дивидендные акции под свободный остаток или план ИИС. Учитывает погрешность до +1 000 ₽ и подсказывает, если небольшая доплата заметно увеличивает доход или закрывает пустой месяц."
+        rightExtra={
+          <span className="fin-sub tabular-nums">{summary.coveredMonths.size}/12 мес.</span>
+        }
         collapsed={collapsedSecs.includes('sec-inv-scanner')}
         onToggleCollapse={onToggleSec}
       >
         {/* Переключатель стратегий */}
-        <div className="grid grid-cols-2 gap-1.5 p-1 rounded-2xl bg-[var(--fld)] border border-[var(--line)]">
+        <div className="grid grid-cols-2 gap-1 p-1 rounded-xl bg-[var(--fld)] border border-[var(--line)]">
           <button
             type="button"
             onClick={() => setStrategy('monthly_salary')}
-            className={`py-2 px-2.5 rounded-xl text-xs font-extrabold flex items-center justify-center gap-1.5 cursor-pointer transition ${
+            className={`py-1.5 px-2 rounded-lg text-xs font-bold cursor-pointer transition whitespace-nowrap truncate ${
               strategy === 'monthly_salary'
-                ? 'bg-amber-500/25 text-amber-100 border border-amber-400/50'
-                : 'text-slate-300 hover:text-white'
+                ? 'bg-[var(--acc)] text-[var(--accInk)] shadow'
+                : 'text-[var(--mute)] hover:text-white'
             }`}
           >
-            <Calendar className="w-3.5 h-3.5 shrink-0" />
-            <span>Ежемесячная зарплата</span>
+            Ежемесячная зарплата
           </button>
           <button
             type="button"
             onClick={() => setStrategy('max_yield')}
-            className={`py-2 px-2.5 rounded-xl text-xs font-extrabold flex items-center justify-center gap-1.5 cursor-pointer transition ${
+            className={`py-1.5 px-2 rounded-lg text-xs font-bold cursor-pointer transition whitespace-nowrap truncate ${
               strategy === 'max_yield'
-                ? 'bg-emerald-500/25 text-emerald-100 border border-emerald-400/50'
-                : 'text-slate-300 hover:text-white'
+                ? 'bg-[var(--acc)] text-[var(--accInk)] shadow'
+                : 'text-[var(--mute)] hover:text-white'
             }`}
           >
-            <TrendingUp className="w-3.5 h-3.5 shrink-0" />
-            <span>Максимальный процент</span>
+            Максимальный процент
           </button>
         </div>
 
-        {/* Фильтр выплат + выбор базы бюджета */}
-        <div className="flex flex-wrap items-center justify-between gap-2">
-          <div className="flex flex-wrap gap-1">
+        {/* Фильтр выплат и база расчёта */}
+        <div className="flex flex-wrap items-center justify-between gap-1.5">
+          <div className="inline-flex gap-1 p-0.5 rounded-xl bg-[var(--fld)] border border-[var(--line)]">
             {(
               [
                 ['all', 'Все'],
-                ['coupon', 'Только купоны'],
-                ['dividend', 'Только дивиденды'],
+                ['coupon', 'Купоны'],
+                ['dividend', 'Дивиденды'],
               ] as [ScannerPayoutFilter, string][]
             ).map(([id, label]) => (
               <button
                 key={id}
                 type="button"
                 onClick={() => setPayoutFilter(id)}
-                className={`px-2.5 py-1 rounded-xl text-[11px] font-bold border cursor-pointer transition ${
+                className={`px-2.5 py-1 rounded-lg text-[11px] font-bold cursor-pointer transition whitespace-nowrap ${
                   payoutFilter === id
-                    ? 'bg-cyan-500/20 border-cyan-400/50 text-cyan-100'
-                    : 'bg-[var(--fld)] border-[var(--line)] text-slate-300 hover:text-white'
+                    ? 'bg-white/14 text-white'
+                    : 'text-[var(--mute)] hover:text-white'
                 }`}
               >
                 {label}
@@ -901,78 +840,68 @@ export default function InvestmentsTab({
             ))}
           </div>
 
-          <div className="flex items-center gap-1 text-[11px]">
+          <div className="inline-flex gap-1 p-0.5 rounded-xl bg-[var(--fld)] border border-[var(--line)]">
             <button
               type="button"
               onClick={() => setScannerBudgetMode('free')}
-              className={`px-2 py-1 rounded-lg border cursor-pointer ${
+              className={`px-2 py-1 rounded-lg text-[11px] font-bold cursor-pointer transition whitespace-nowrap tabular-nums ${
                 scannerBudgetMode === 'free'
-                  ? 'bg-white/15 border-white/30 text-white font-bold'
-                  : 'bg-transparent border-white/10 text-slate-400'
+                  ? 'bg-white/14 text-white'
+                  : 'text-[var(--mute)] hover:text-white'
               }`}
             >
-              Остаток ({formatMoney(investments.freeCash)})
+              Остаток {formatMoney(investments.freeCash)}
             </button>
             <button
               type="button"
               onClick={() => setScannerBudgetMode('plan')}
-              className={`px-2 py-1 rounded-lg border cursor-pointer ${
+              className={`px-2 py-1 rounded-lg text-[11px] font-bold cursor-pointer transition whitespace-nowrap tabular-nums ${
                 scannerBudgetMode === 'plan'
-                  ? 'bg-white/15 border-white/30 text-white font-bold'
-                  : 'bg-transparent border-white/10 text-slate-400'
+                  ? 'bg-white/14 text-white'
+                  : 'text-[var(--mute)] hover:text-white'
               }`}
             >
-              План ({formatMoney(investments.monthlyPlan)})
+              План {formatMoney(investments.monthlyPlan)}
             </button>
           </div>
         </div>
 
-        {/* Календарь покрытия выплат по 12 месяцам */}
-        <div className="rounded-2xl bg-[var(--fld)] border border-[var(--line)] p-2.5 space-y-1.5">
-          <div className="flex items-center justify-between text-[11px]">
-            <span className="font-bold text-slate-200">
-              Календарь купонов и дивидендов (покрыто {summary.coveredMonths.size} из 12 мес.)
-            </span>
-          </div>
-          <div className="grid grid-cols-6 sm:grid-cols-12 gap-1">
-            {MONTH_SHORT_RU.map((lbl, idx) => {
-              const covered = summary.coveredMonths.has(idx + 1);
-              return (
-                <div
-                  key={lbl}
-                  className={`py-1 rounded-lg text-center text-[10px] font-bold border ${
-                    covered
-                      ? 'bg-emerald-500/25 border-emerald-400/50 text-emerald-200'
-                      : 'bg-black/25 border-white/8 text-slate-500'
-                  }`}
-                >
-                  {lbl}
-                </div>
-              );
-            })}
-          </div>
+        {/* 12-месячный календарь выплат */}
+        <div className="grid grid-cols-6 gap-1">
+          {MONTH_SHORT_RU.map((lbl, idx) => {
+            const covered = summary.coveredMonths.has(idx + 1);
+            return (
+              <div
+                key={lbl}
+                className={`py-1 rounded-lg text-center text-[11px] font-bold border ${
+                  covered
+                    ? 'bg-emerald-500/20 border-emerald-400/40 text-emerald-200'
+                    : 'bg-[var(--fld)] border-[var(--line)] text-[var(--mute)]'
+                }`}
+              >
+                {lbl}
+              </div>
+            );
+          })}
         </div>
 
-        {/* Подсветка рекомендации при погрешности бюджета до +1 000 ₽ */}
+        {/* Совет при доплате в пределах +1 000 ₽ (в фирменном стиле .tip-card.invest) */}
         {scannerReport.flexBoostTip && (
-          <div className="rounded-2xl bg-gradient-to-br from-amber-500/18 to-emerald-500/12 border border-amber-400/50 p-3 space-y-2">
+          <div className="tip-card invest space-y-2">
             <div className="flex items-center justify-between gap-2">
-              <div className="flex items-center gap-1.5 text-xs font-extrabold text-amber-200">
-                <Sparkles className="w-4 h-4 text-amber-300 shrink-0" />
-                <span>Выгодная доплата в пределах +1 000 ₽</span>
-              </div>
-              <span className="text-[11px] font-extrabold px-2 py-0.5 rounded-full bg-amber-400/25 text-amber-100 font-num">
-                +{formatMoney(scannerReport.flexBoostTip.topUpRub)}
-              </span>
+              <b className="text-[var(--ink)]">
+                Выгодная доплата +{formatMoney(scannerReport.flexBoostTip.topUpRub)}
+              </b>
+              <span className="fin-sub tabular-nums">в пределах 1 000 ₽</span>
             </div>
-            <p className="text-xs text-slate-100 leading-relaxed">
+            <div className="text-xs text-slate-200 leading-relaxed">
               {scannerReport.flexBoostTip.reason}
-            </p>
-            <div className="flex items-center justify-between gap-2 text-[11px] text-amber-100/90 flex-wrap">
-              <span>
-                Итого к покупке: <b>{scannerReport.flexBoostTip.totalUnits} шт</b> за{' '}
-                <b>{formatMoney(scannerReport.flexBoostTip.totalCost)}</b> · доход ~
-                <b>{formatMoney(scannerReport.flexBoostTip.annualIncomeAfter)}/год</b>
+            </div>
+            <div className="flex items-center justify-between gap-2 flex-wrap">
+              <span className="fin-sub tabular-nums">
+                {scannerReport.flexBoostTip.totalUnits} шт за{' '}
+                {formatMoney(scannerReport.flexBoostTip.totalCost)} · ~
+                {formatMoney(scannerReport.flexBoostTip.annualIncomeAfter)}/год
               </span>
               <button
                 type="button"
@@ -984,7 +913,7 @@ export default function InvestmentsTab({
                       scannerReport.flexBoostTip!.instrument.fallbackPrice
                   )
                 }
-                className="px-2.5 py-1 rounded-xl bg-amber-400 text-slate-950 font-extrabold text-[11px] hover:bg-amber-300 cursor-pointer transition"
+                className="fin-btn sm"
               >
                 + В портфель
               </button>
@@ -992,82 +921,59 @@ export default function InvestmentsTab({
           </div>
         )}
 
-        {/* Карточки кандидатов */}
-        <div className="space-y-2">
+        {/* Список рекомендаций */}
+        <div className="space-y-1.5 max-h-80 overflow-y-auto pr-0.5">
           {scannerReport.candidates.slice(0, 8).map((c) => {
             const monthsLbl = c.instrument.payoutMonths.map((m) => MONTH_SHORT_RU[m - 1]).join(', ');
             const canBuyNow = c.affordableLots > 0;
             const canBuyWithFlex = !canBuyNow && c.flexTopUpNeeded > 0;
 
             return (
-              <div
-                key={c.instrument.ticker}
-                className={`rounded-2xl p-3 border transition ${
-                  canBuyNow
-                    ? 'bg-[var(--fld)] border-[var(--line)]'
-                    : canBuyWithFlex
-                    ? 'bg-amber-500/8 border-amber-400/35'
-                    : 'bg-black/20 border-white/8 opacity-75'
-                }`}
-              >
-                <div className="flex items-start justify-between gap-2">
-                  <div className="min-w-0 flex-1">
-                    <div className="flex items-center gap-1.5 flex-wrap">
-                      <span className="text-xs font-extrabold text-white">{c.instrument.name}</span>
-                      <span
-                        className={`text-[10px] font-bold px-1.5 py-0.5 rounded border ${
-                          ASSET_KIND_META[c.instrument.kind].badgeClass
-                        }`}
-                      >
-                        {c.instrument.annualYieldPct}% год.
-                      </span>
-                      {strategy === 'monthly_salary' && c.newMonthsCovered.length > 0 && (
-                        <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-200">
-                          +{c.newMonthsCovered.map((m) => MONTH_SHORT_RU[m - 1]).join(', ')}
-                        </span>
-                      )}
-                    </div>
-                    <div className="text-[11px] text-slate-400 mt-0.5">
-                      Лот ({c.instrument.lotSize} шт): <b className="text-slate-200">{formatMoney(c.lotPrice)}</b> · Выплаты: {monthsLbl}
-                    </div>
+              <div key={c.instrument.ticker} className="tx-tile">
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-baseline justify-between gap-2">
+                    <b className="truncate text-[var(--ink)]">{c.instrument.name}</b>
+                    <span className="text-emerald-400 font-bold text-xs tabular-nums shrink-0">
+                      {c.instrument.annualYieldPct}%
+                    </span>
                   </div>
-
-                  <button
-                    type="button"
-                    onClick={() =>
-                      handleQuickAddFromScanner(
-                        c.instrument,
-                        canBuyNow ? c.affordableUnits : c.instrument.lotSize,
-                        c.unitPrice
-                      )
-                    }
-                    className="px-2.5 py-1.5 rounded-xl bg-white/10 hover:bg-white/20 border border-white/15 text-[11px] font-bold text-white shrink-0 cursor-pointer transition"
-                  >
-                    + {canBuyNow ? `${c.affordableUnits} шт` : `${c.instrument.lotSize} шт`}
-                  </button>
+                  <div className="fin-sub tabular-nums mt-0.5 truncate">
+                    {KIND_LABELS[c.instrument.kind]} · {formatMoney(c.unitPrice)}
+                    {c.instrument.lotSize > 1 ? ` (лот ${c.instrument.lotSize} шт = ${formatMoney(c.lotPrice)})` : ''}
+                    {monthsLbl ? ` · ${monthsLbl}` : ''}
+                  </div>
+                  <div className="fin-sub tabular-nums mt-0.5 truncate">
+                    {canBuyNow ? (
+                      <>
+                        Доступно {c.affordableUnits} шт ({formatMoney(c.affordableCost)}) · ~
+                        {formatMoney(c.expectedAnnualIncome)}/год
+                      </>
+                    ) : canBuyWithFlex ? (
+                      <span className="text-amber-300">
+                        Доплата +{formatMoney(c.flexTopUpNeeded)} → 1 лот ({formatMoney(c.lotPrice)})
+                      </span>
+                    ) : (
+                      <>Нужно {formatMoney(c.lotPrice)} за лот</>
+                    )}
+                    {c.newMonthsCovered.length > 0 && strategy === 'monthly_salary'
+                      ? ` · закроет ${c.newMonthsCovered.map((m) => MONTH_SHORT_RU[m - 1]).join(', ')}`
+                      : ''}
+                  </div>
                 </div>
 
-                <div className="mt-2 pt-2 border-t border-white/8 flex items-center justify-between gap-2 text-[11px] flex-wrap">
-                  {canBuyNow ? (
-                    <span className="text-emerald-200">
-                      На {formatMoney(scannerReport.budgetUsed)} доступно: <b>{c.affordableUnits} шт</b> ({formatMoney(c.affordableCost)}) → <b>+{formatMoney(c.expectedAnnualIncome)}/год</b>
-                    </span>
-                  ) : canBuyWithFlex ? (
-                    <span className="text-amber-200">
-                      Не хватает <b>{formatMoney(c.flexTopUpNeeded)}</b> (в пределах погрешности 1 000 ₽) для покупки 1 лота
-                    </span>
-                  ) : (
-                    <span className="text-slate-400">
-                      Нужно ещё {formatMoney(Math.max(0, Math.ceil(c.lotPrice - scannerReport.budgetUsed)))} для 1 лота
-                    </span>
-                  )}
-
-                  {canBuyNow && c.flexTopUpNeeded > 0 && (
-                    <span className="text-[10px] font-bold text-amber-200">
-                      ✨ +{formatMoney(c.flexTopUpNeeded)} даст ещё 1 лот (+{formatMoney(c.flexExtraAnnualIncome)}/год)
-                    </span>
-                  )}
-                </div>
+                <button
+                  type="button"
+                  onClick={() =>
+                    handleQuickAddFromScanner(
+                      c.instrument,
+                      canBuyNow ? c.affordableUnits : c.instrument.lotSize,
+                      c.unitPrice
+                    )
+                  }
+                  className={`fin-btn sm shrink-0 ${canBuyNow ? '' : 'ghost'}`}
+                >
+                  {canBuyNow ? '+ Купить' : '+ Добавить'}
+                </button>
               </div>
             );
           })}

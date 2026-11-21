@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { Pencil, Trash2 } from 'lucide-react';
-import { AppState, DepositItem, GoalScope, Transaction } from '../types';
+import { AppState, GoalScope, Transaction } from '../types';
 import {
   buildXlsxBlob,
   fmtShortDate,
@@ -31,9 +31,6 @@ interface BudgetTabProps {
   onDeleteTx: (id: number) => void;
   onEditTx: (tx: Transaction) => void;
   onUpdateGoals: (scope: GoalScope, limit: number, target: number) => void;
-  onAddDeposit: (dep: DepositItem) => void;
-  onDeleteDeposit: (id: number) => void;
-  onEditDeposit: (dep: DepositItem) => void;
   onOpenPinManager: () => void;
   onImportJsonFile: (file: File, passHint: string) => void;
   onShowToast: (msg: string) => void;
@@ -57,9 +54,6 @@ export default function BudgetTab({
   onDeleteTx,
   onEditTx,
   onUpdateGoals,
-  onAddDeposit,
-  onDeleteDeposit,
-  onEditDeposit,
   onOpenPinManager,
   onImportJsonFile,
   onShowToast,
@@ -74,10 +68,6 @@ export default function BudgetTab({
   const [limitInp, setLimitInp] = useState(currentGoal.limit ? String(currentGoal.limit) : '');
   const [targetInp, setTargetInp] = useState(currentGoal.target ? String(currentGoal.target) : '');
 
-  const [depName, setDepName] = useState('');
-  const [depRate, setDepRate] = useState('');
-  const [depSum, setDepSum] = useState('');
-  const [depRule, setDepRule] = useState('');
   const [backupPass, setBackupPass] = useState('');
 
   useEffect(() => {
@@ -141,25 +131,6 @@ export default function BudgetTab({
     onShowToast(`Цель и лимит ${scopeLabels[goalScope]} сохранены!`);
   };
 
-  const handleAddDepositSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!depName.trim()) {
-      onShowToast('Укажите название вклада или копилки.');
-      return;
-    }
-    onAddDeposit({
-      id: uid(),
-      name: depName.trim(),
-      sum: parseNum(depSum),
-      rate: parseNum(depRate),
-      rule: depRule.trim(),
-    });
-    setDepName('');
-    setDepRate('');
-    setDepSum('');
-    setDepRule('');
-  };
-
   const handleExportEncrypted = async (share: boolean) => {
     const pass = backupPass.trim() || activePin;
     if (!pass) {
@@ -219,8 +190,6 @@ export default function BudgetTab({
     a.remove();
     onShowToast('Копия JSON сохранена.');
   };
-
-  const totalDeposits = state.deposits.reduce((a, d) => a + (d.sum || 0), 0);
 
   return (
     <>
@@ -504,94 +473,6 @@ export default function BudgetTab({
             </div>
             <button type="submit" className="fin-btn sm w-full">
               💾 Сохранить цель и лимит
-            </button>
-          </form>
-        </details>
-      </GlassSection>
-
-      <GlassSection
-        id="sec-deposits"
-        title="🏛️ Мои вклады и цели"
-        helpText="Учёт ваших накопительных счетов, вкладов и финансовой подушки с процентной ставкой и правилом пополнения."
-        rightExtra={totalDeposits > 0 ? <span className="fin-sub">{formatMoney(totalDeposits)}</span> : null}
-        collapsed={collapsedSecs.includes('sec-deposits')}
-        onToggleCollapse={onToggleSec}
-      >
-        <div className="space-y-2 max-h-56 overflow-y-auto pr-0.5">
-          {state.deposits.length === 0 ? (
-            <div className="fin-sub py-1">Добавьте вклад или цель ниже.</div>
-          ) : (
-            state.deposits.map((d) => (
-              <div key={d.id} className="tx-tile dep">
-                <div className="flex items-center gap-2.5 min-w-0">
-                  <span className="w-10 h-10 rounded-xl bg-black/15 flex items-center justify-center text-lg shrink-0">
-                    💼
-                  </span>
-                  <div className="min-w-0">
-                    <div className="font-extrabold text-sm truncate">
-                      {d.name} {d.rate ? `${d.rate}% год.` : ''}
-                    </div>
-                    <div className="text-xs opacity-80 font-semibold tabular-nums">
-                      Сумма: {formatMoney(d.sum)} · {d.rule || 'Без правила'}
-                    </div>
-                  </div>
-                </div>
-                <div className="flex items-center gap-1 shrink-0">
-                  <button
-                    type="button"
-                    onClick={() => onEditDeposit(d)}
-                    className="p-1.5 text-[#231500] hover:opacity-70 cursor-pointer"
-                  >
-                    <Pencil className="w-3.5 h-3.5" />
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => onDeleteDeposit(d.id)}
-                    className="p-1.5 text-[#231500] hover:opacity-70 cursor-pointer"
-                  >
-                    <Trash2 className="w-3.5 h-3.5" />
-                  </button>
-                </div>
-              </div>
-            ))
-          )}
-        </div>
-
-        <details className="rounded-xl bg-[var(--fld)] border border-[var(--line)] p-2.5">
-          <summary className="cursor-pointer font-bold text-xs text-[var(--acc)]">
-            Добавить вклад или цель
-          </summary>
-          <form onSubmit={handleAddDepositSubmit} className="space-y-2 mt-2.5">
-            <div className="grid grid-cols-2 gap-2">
-              <input
-                className="fin-input w-full"
-                value={depName}
-                onChange={(e) => setDepName(e.target.value)}
-                placeholder="Подушка / Вклад"
-              />
-              <input
-                className="fin-input w-full tabular-nums"
-                inputMode="decimal"
-                value={depRate}
-                onChange={(e) => setDepRate(e.target.value)}
-                placeholder="% годовых"
-              />
-              <input
-                className="fin-input w-full tabular-nums"
-                inputMode="decimal"
-                value={depSum}
-                onChange={(e) => setDepSum(e.target.value)}
-                placeholder="Сумма, ₽"
-              />
-              <input
-                className="fin-input w-full"
-                value={depRule}
-                onChange={(e) => setDepRule(e.target.value)}
-                placeholder="Правило (5%)"
-              />
-            </div>
-            <button type="submit" className="fin-btn sm w-full">
-              + Сохранить вклад
             </button>
           </form>
         </details>

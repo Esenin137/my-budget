@@ -18,7 +18,6 @@ import {
 import {
   AppState,
   CalendarTask,
-  DepositItem,
   EncryptedPackage,
   FamilyNamedAmount,
   FontScale,
@@ -64,7 +63,6 @@ import UniversalVoiceModal from './components/UniversalVoiceModal';
 import { OfflineIndicator, PWAInstallButton } from './components/PWAInstallButton';
 import {
   CategoriesModal,
-  EditDepositModal,
   EditFamilyModal,
   EditTxModal,
   ModalShell,
@@ -82,7 +80,6 @@ const ALL_SECTION_IDS = [
   'sec-inc-add',
   'sec-inc-list',
   'sec-goals-tank',
-  'sec-deposits',
   'sec-security',
   'sec-exp-add',
   'sec-exp-list',
@@ -101,9 +98,9 @@ const ALL_SECTION_IDS = [
 ];
 
 const TAB_HEAD_META: Record<TabId, { title: string; accent: string }> = {
-  budget: { title: 'Бюджет и Вклады', accent: '#10B981' },
+  budget: { title: 'Бюджет', accent: '#10B981' },
   expenses: { title: 'Расходы и Чеки', accent: '#F06253' },
-  invest: { title: 'ИИС и Активы', accent: '#E8B44C' },
+  invest: { title: 'Пассивный доход', accent: '#E8B44C' },
   planner: { title: 'Задачи и Заметки', accent: '#22D3EE' },
   advisor: { title: 'ИИ-Советник', accent: '#A78BFA' },
   family: { title: 'Семейный бюджет', accent: '#60A5FA' },
@@ -112,14 +109,14 @@ const TAB_HEAD_META: Record<TabId, { title: string; accent: string }> = {
 const NAV_ITEMS: { id: TabId; label: string; icon: React.ComponentType<{ className?: string }> }[] = [
   { id: 'budget', label: 'Бюджет', icon: Wallet },
   { id: 'expenses', label: 'Расходы', icon: ShoppingCart },
-  { id: 'invest', label: 'ИИС', icon: TrendingUp },
+  { id: 'invest', label: 'Пассив', icon: TrendingUp },
   { id: 'planner', label: 'Задачи', icon: CalendarCheck2 },
   { id: 'advisor', label: 'Советник', icon: Bot },
   { id: 'family', label: 'Семья', icon: Users },
 ];
 
 const TAB_SECTIONS: Record<TabId, string[]> = {
-  budget: ['sec-inc-add', 'sec-inc-list', 'sec-goals-tank', 'sec-deposits', 'sec-security'],
+  budget: ['sec-inc-add', 'sec-inc-list', 'sec-goals-tank', 'sec-security'],
   expenses: ['sec-exp-add', 'sec-exp-list', 'sec-charts'],
   invest: ['sec-inv-overview', 'sec-inv-assets', 'sec-inv-scanner'],
   planner: ['sec-planner-cal', 'sec-planner-notes'],
@@ -175,7 +172,6 @@ export default function App() {
     cat: string | null;
   } | null>(null);
   const [editingTx, setEditingTx] = useState<Transaction | null>(null);
-  const [editingDeposit, setEditingDeposit] = useState<DepositItem | null>(null);
   const [editingFam, setEditingFam] = useState<{
     listKey: 'balances' | 'expenses' | 'loans';
     item: FamilyNamedAmount;
@@ -1004,17 +1000,6 @@ export default function App() {
                 periodGoals: { ...prev.periodGoals, [scope]: { limit, target } },
               }));
             }}
-            onAddDeposit={(dep) => {
-              commitState((prev) => ({ ...prev, deposits: [...prev.deposits, dep] }));
-              showToast('Вклад добавлен!');
-            }}
-            onDeleteDeposit={(id) =>
-              commitState((prev) => ({
-                ...prev,
-                deposits: prev.deposits.filter((d) => d.id !== id),
-              }))
-            }
-            onEditDeposit={(dep) => setEditingDeposit(dep)}
             onOpenPinManager={() =>
               activePin ? setShowPinManageModal(true) : setPinOverlayMode('set1')
             }
@@ -1328,21 +1313,6 @@ export default function App() {
             }));
             setEditingTx(null);
             showToast('Изменения сохранены');
-          }}
-        />
-      )}
-
-      {editingDeposit && (
-        <EditDepositModal
-          deposit={editingDeposit}
-          onClose={() => setEditingDeposit(null)}
-          onSave={(updated) => {
-            commitState((prev) => ({
-              ...prev,
-              deposits: prev.deposits.map((d) => (d.id === updated.id ? updated : d)),
-            }));
-            setEditingDeposit(null);
-            showToast('Вклад обновлён');
           }}
         />
       )}

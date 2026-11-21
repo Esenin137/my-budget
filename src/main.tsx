@@ -20,6 +20,11 @@ registerSW({
   onRegisteredSW(_swUrl, registration) {
     if (registration) {
       registration.update().catch(() => {});
+      document.addEventListener('visibilitychange', () => {
+        if (document.visibilityState === 'visible') {
+          registration.update().catch(() => {});
+        }
+      });
     }
   },
 });

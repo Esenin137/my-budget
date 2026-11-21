@@ -473,15 +473,32 @@ export function runLocalAdvisor(
       fromInc,
       label: `${pct}% от ${fromInc ? 'дохода' : 'остатка'}`,
     };
-    const nextDeposits = state.deposits.length
-      ? state.deposits.map((d, idx) => (idx === 0 ? { ...d, rule: saveRule.label } : d))
-      : [{ id: uid(), name: `Копилка ${rate}% год.`, sum: 0, rate, rule: saveRule.label }];
+    const existingAssets = state.investments?.assets || [];
+    const hasDeposit = existingAssets.some((a) => a.kind === 'deposit');
+    const nextAssets = hasDeposit
+      ? existingAssets
+      : [
+          {
+            id: uid(),
+            kind: 'deposit' as const,
+            ticker: '',
+            name: `Копилка (${saveRule.label})`,
+            qty: 1,
+            price: 0,
+            annualYieldPct: rate,
+            payoutMonths: [],
+          },
+          ...existingAssets,
+        ];
     const y1 = Math.round(monthlyAdd * 12 * (1 + (rate / 100) * 0.55));
     return {
       matched: true,
-      sourceLabel: 'Личные финансы · Раздел «Бюджет и Вклады»',
+      sourceLabel: 'Личные финансы · Раздел «Пассивный доход»',
       reply: `Закрепил правило: откладывать ${pct}% от ${fromInc ? 'дохода' : 'остатка'}.\n• К переводу за период: ${formatMoney(monthlyAdd)}\n• При ставке ${rate}% годовых за год накопится ~${formatMoney(y1)}.`,
-      statePatch: { saveRule, deposits: nextDeposits },
+      statePatch: {
+        saveRule,
+        investments: { ...state.investments, assets: nextAssets },
+      },
     };
   }
 
@@ -491,15 +508,32 @@ export function runLocalAdvisor(
     const rM = q.match(/под\s*(\d+(?:[.,]\d+)?)/);
     const rVal = rM ? parseFloat(rM[1].replace(',', '.')) : 18;
     const saveRule = { type: 'fix' as const, val: fix, rate: rVal, label: `${formatMoney(fix)} в месяц` };
-    const nextDeposits = state.deposits.length
-      ? state.deposits.map((d, idx) => (idx === 0 ? { ...d, rule: saveRule.label } : d))
-      : [{ id: uid(), name: `Копилка ${rVal}% год.`, sum: 0, rate: rVal, rule: saveRule.label }];
+    const existingAssets = state.investments?.assets || [];
+    const hasDeposit = existingAssets.some((a) => a.kind === 'deposit');
+    const nextAssets = hasDeposit
+      ? existingAssets
+      : [
+          {
+            id: uid(),
+            kind: 'deposit' as const,
+            ticker: '',
+            name: `Копилка (${saveRule.label})`,
+            qty: 1,
+            price: 0,
+            annualYieldPct: rVal,
+            payoutMonths: [],
+          },
+          ...existingAssets,
+        ];
     const yr1 = Math.round(fix * 12 * (1 + (rVal / 100) * 0.55));
     return {
       matched: true,
-      sourceLabel: 'Личные финансы · Раздел «Бюджет и Вклады»',
+      sourceLabel: 'Личные финансы · Раздел «Пассивный доход»',
       reply: `Закреплено: пополнять вклад на ${formatMoney(fix)}/мес.\n• За год под ~${rVal}% накопится ~${formatMoney(yr1)}.`,
-      statePatch: { saveRule, deposits: nextDeposits },
+      statePatch: {
+        saveRule,
+        investments: { ...state.investments, assets: nextAssets },
+      },
     };
   }
 
@@ -558,7 +592,7 @@ export function runLocalAdvisor(
     }
     return {
       matched: true,
-      sourceLabel: 'Личные финансы · Раздел «ИИС и Активы»',
+      sourceLabel: 'Личные финансы · Раздел «Пассивный доход»',
       reply: lines.join('\n'),
     };
   }
@@ -640,8 +674,8 @@ export function runLocalAdvisor(
         : '';
     return {
       matched: true,
-      sourceLabel: 'Личные финансы · Раздел «ИИС и Активы»',
-      reply: `Сравнение на сумме ${formatMoney(investBase)}:\n1. Накопительный счёт / фонд ликвидности (~16–17%): через год ~${formatMoney(dep1Y)}, доступ в любой день.\n2. ОФЗ на ИИС (~16% + вычет 13% НДФЛ): в первый год отдача до ~${formatMoney(iis1Y)}.${ownLine}\nПравило: сначала подушка на 3 месяца на вкладе, затем регулярные пополнения ИИС (подбор бумаг доступен во вкладке «ИИС и Активы → Сканер рынка»).`,
+      sourceLabel: 'Личные финансы · Раздел «Пассивный доход»',
+      reply: `Сравнение на сумме ${formatMoney(investBase)}:\n1. Накопительный счёт / фонд ликвидности (~16–17%): через год ~${formatMoney(dep1Y)}, доступ в любой день.\n2. ОФЗ на ИИС (~16% + вычет 13% НДФЛ): в первый год отдача до ~${formatMoney(iis1Y)}.${ownLine}\nПравило: сначала подушка на 3 месяца на вкладе, затем регулярные пополнения ИИС (подбор бумаг доступен во вкладке «Пассивный доход → Сканер рынка»).`,
     };
   }
 
@@ -656,10 +690,10 @@ export function runLocalAdvisor(
     }
     const invBankDeps = state.investments.assets.filter((a) => a.kind === 'deposit');
     invBankDeps.forEach((a) => {
-      lines.push(`• ${a.name} (ИИС и Активы): ${formatMoney(a.price)}${a.annualYieldPct ? ` под ${a.annualYieldPct}%` : ''}`);
+      lines.push(`• ${a.name}: ${formatMoney(a.price)}${a.annualYieldPct ? ` под ${a.annualYieldPct}%` : ''}`);
     });
     if (state.deposits.length === 0 && invBankDeps.length === 0) {
-      lines.push('• Пока нет добавленных банковских вкладов (их можно внести в «Бюджете» или «ИИС и Активы»).');
+      lines.push('• Пока нет добавленных банковских вкладов (их можно внести в разделе «Пассивный доход»).');
     }
     if (famSaved > 0) {
       lines.push(`• Семейные накопления («Семья»): ${formatMoney(famSaved)}`);
@@ -667,7 +701,7 @@ export function runLocalAdvisor(
     lines.push(`• Итого вкладов и накоплений: ${formatMoney(depTotal + famSaved)}`);
     return {
       matched: true,
-      sourceLabel: 'Личные финансы · Разделы «Вклады» и «ИИС и Активы»',
+      sourceLabel: 'Личные финансы · Раздел «Пассивный доход»',
       reply: lines.join('\n'),
     };
   }
