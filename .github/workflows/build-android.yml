@@ -12,6 +12,7 @@ on:
       - 'package.json'
       - 'vite.config.ts'
       - 'capacitor.config.ts'
+      - 'scripts/**'
       - '.github/workflows/build-android.yml'
 
 concurrency:
@@ -58,6 +59,9 @@ jobs:
             npx cap add android
           fi
           npx cap sync android
+
+      - name: Apply matching Android APK launcher & notification icons
+        run: node scripts/sync-android-assets.mjs
 
       - name: Compile Android Debug APK
         run: |

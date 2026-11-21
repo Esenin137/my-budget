@@ -18,6 +18,7 @@ import {
   parseNum,
 } from '../utils/finance';
 import { isoDate, normDate } from '../utils/storage';
+import type { UpcomingReminder } from '../utils/notifications';
 
 // 1. Due Task Reminder Banner (In-app notification with Snooze +15 min & Done)
 interface ReminderBannerProps {
@@ -61,6 +62,81 @@ export function ReminderAlertToast({ task, onComplete, onSnooze, onDismiss }: Re
             >
               <Clock className="w-3.5 h-3.5" />
               <span>+15 мин</span>
+            </button>
+            <button
+              type="button"
+              onClick={onDismiss}
+              className="ml-auto p-1.5 text-slate-400 hover:text-white cursor-pointer"
+              aria-label="Закрыть"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// 1b. Approaching Financial Reminder Banner (Tomorrow / Today for deposits, coupons, dividends, payments)
+interface FinancialReminderToastProps {
+  reminder: UpcomingReminder;
+  stage: 'today' | 'tomorrow';
+  onOpen: (reminder: UpcomingReminder) => void;
+  onDismiss: () => void;
+}
+
+export function FinancialReminderToast({
+  reminder,
+  stage,
+  onOpen,
+  onDismiss,
+}: FinancialReminderToastProps) {
+  const leadText = stage === 'tomorrow' ? 'Завтра' : 'Сегодня';
+  const kindLabel =
+    reminder.kind === 'deposit'
+      ? 'Срок вклада'
+      : reminder.kind === 'coupon'
+      ? 'Выплата купона'
+      : reminder.kind === 'dividend'
+      ? 'Выплата дивидендов'
+      : reminder.kind === 'recurring'
+      ? 'Повторяющийся платёж'
+      : 'Событие календаря';
+
+  return (
+    <div className="fixed top-4 right-4 left-4 sm:left-auto sm:w-[400px] z-[90] rounded-2xl bg-[#112420] border border-emerald-400/50 shadow-2xl p-4">
+      <div className="flex items-start gap-3">
+        <span className="w-10 h-10 rounded-xl bg-emerald-500/20 text-emerald-300 flex items-center justify-center shrink-0">
+          <Bell className="w-5 h-5" />
+        </span>
+        <div className="flex-1 min-w-0">
+          <div className="text-xs font-bold text-emerald-300 flex items-center gap-1.5">
+            <span>{leadText}</span>
+            <span aria-hidden="true">·</span>
+            <span>{kindLabel}</span>
+            <span aria-hidden="true">·</span>
+            <span className="tabular-nums">{fmtShortDate(reminder.dateIso)}</span>
+          </div>
+          <div className="text-sm font-bold text-white mt-0.5 break-words">{reminder.title}</div>
+          <div className="text-xs text-slate-300 mt-0.5 tabular-nums">
+            {reminder.subtitle}
+            {reminder.amount && reminder.amount > 0 ? ` · ${formatMoney(reminder.amount)}` : ''}
+          </div>
+          <div className="flex items-center gap-2 mt-3">
+            <button
+              type="button"
+              onClick={() => onOpen(reminder)}
+              className="px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold cursor-pointer"
+            >
+              Открыть
+            </button>
+            <button
+              type="button"
+              onClick={onDismiss}
+              className="px-3 py-1.5 rounded-lg bg-white/10 hover:bg-white/15 text-slate-100 text-xs font-semibold cursor-pointer"
+            >
+              Понятно
             </button>
             <button
               type="button"

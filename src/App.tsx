@@ -50,6 +50,14 @@ import {
   UniversalCommandResult,
 } from './utils/finance';
 import { playReminderChime } from './utils/sound';
+import {
+  findNextDueApproachingReminder,
+  isNativeNotificationsPlatform,
+  markInAppReminderShown,
+  requestNotificationPermissions,
+  syncNativeLocalNotifications,
+  type UpcomingReminder,
+} from './utils/notifications';
 import { syncEnabledOnlineSources } from './utils/knowledgeBase';
 import PlannerTab from './components/PlannerTab';
 import BudgetTab from './components/BudgetTab';
@@ -66,6 +74,7 @@ import {
   CategoriesModal,
   EditFamilyModal,
   EditTxModal,
+  FinancialReminderToast,
   ModalShell,
   PeriodBreakdownModal,
   PinOverlay,
@@ -188,9 +197,14 @@ export default function App() {
 
   // Alerts & Toast
   const [activeAlertTask, setActiveAlertTask] = useState<CalendarTask | null>(null);
+  const [activeFinancialReminder, setActiveFinancialReminder] = useState<{
+    reminder: UpcomingReminder;
+    stage: 'today' | 'tomorrow';
+  } | null>(null);
   const [toast, setToast] = useState<ToastState | null>(null);
   const toastTimerRef = useRef<number | null>(null);
   const hasAutoSyncedKbRef = useRef<boolean>(false);
+  const hasRequestedNativeNotifRef = useRef<boolean>(false);
 
   const showToast = useCallback((message: string, undo?: () => void) => {
     if (toastTimerRef.current) window.clearTimeout(toastTimerRef.current);
@@ -294,9 +308,11 @@ export default function App() {
     [storageReady, activePin]
   );
 
-  // Reminder ticker every 15s (supports repeating tasks and remindBeforeMin lead times)
+  // Reminder ticker every 15s (exact-time calendar tasks + approaching deposits, coupons, dividends & payments)
   useEffect(() => {
     if (!storageReady) return;
+    const soundEnabled = state.uiSettings?.soundAlertsEnabled !== false;
+
     const checkReminders = () => {
       const now = new Date();
       const nowMs = now.getTime();
@@ -344,7 +360,7 @@ export default function App() {
 
       if (found) {
         const { task: due, occIso, notifKey } = found;
-        playReminderChime();
+        if (soundEnabled) playReminderChime('urgent');
         setActiveAlertTask({ ...due, date: occIso });
         commitState((prev) => ({
           ...prev,
@@ -352,10 +368,34 @@ export default function App() {
             t.id === due.id ? { ...t, notifiedAt: notifKey, snoozedUntil: null } : t
           ),
         }));
-        if ('Notification' in window && Notification.permission === 'granted') {
+        if (!isNativeNotificationsPlatform() && 'Notification' in window && Notification.permission === 'granted') {
           try {
             new Notification('Мои финансы — Напоминание', {
               body: `${due.time ? `${due.time} · ` : ''}${due.title}`,
+              icon: `${import.meta.env.BASE_URL}pwa-192x192.png`,
+            });
+          } catch {
+            // In-app alert already shown
+          }
+        }
+        return;
+      }
+
+      // Check approaching financial reminders ("Завтра..." / "Сегодня...") for deposits, coupons, dividends, recurring
+      const dueFinancial = findNextDueApproachingReminder(state, now);
+      if (dueFinancial) {
+        const { reminder, stage, dedupKey } = dueFinancial;
+        markInAppReminderShown(dedupKey);
+        if (soundEnabled) {
+          playReminderChime(stage === 'today' ? 'urgent' : 'default');
+        }
+        setActiveFinancialReminder({ reminder, stage });
+        if (!isNativeNotificationsPlatform() && 'Notification' in window && Notification.permission === 'granted') {
+          try {
+            const lead = stage === 'tomorrow' ? 'Завтра' : 'Сегодня';
+            const amtPart = reminder.amount && reminder.amount > 0 ? ` · ${formatMoney(reminder.amount)}` : '';
+            new Notification(`${lead} · ${reminder.title}`, {
+              body: `${reminder.subtitle}${amtPart}`,
               icon: `${import.meta.env.BASE_URL}pwa-192x192.png`,
             });
           } catch {
@@ -368,7 +408,37 @@ export default function App() {
     checkReminders();
     const timer = window.setInterval(checkReminders, 15000);
     return () => window.clearInterval(timer);
-  }, [storageReady, state.tasks, commitState]);
+  }, [storageReady, state, commitState]);
+
+  // Capacitor Android APK: request notification permission on first native launch & keep local notifications synced
+  useEffect(() => {
+    if (!storageReady || !isNativeNotificationsPlatform()) return;
+    if (hasRequestedNativeNotifRef.current) return;
+    hasRequestedNativeNotifRef.current = true;
+
+    requestNotificationPermissions()
+      .then((perm) => {
+        if (perm === 'granted') {
+          void syncNativeLocalNotifications(state);
+        }
+      })
+      .catch(() => {});
+  }, [storageReady, state]);
+
+  useEffect(() => {
+    if (!storageReady || !isNativeNotificationsPlatform()) return;
+    const timer = window.setTimeout(() => {
+      void syncNativeLocalNotifications(state);
+    }, 650);
+    return () => window.clearTimeout(timer);
+  }, [
+    storageReady,
+    state.tasks,
+    state.tx,
+    state.investments.assets,
+    state.uiSettings.remindDayBefore,
+    state.uiSettings.reminderHour,
+  ]);
 
   // Recurring transactions due (timezone-safe local dates + month-end clamp + loop guard)
   const dueRecurring = useMemo(() => {
@@ -1121,7 +1191,9 @@ export default function App() {
             }}
             onShowToast={showToast}
             onTestReminder={(sampleTitle) => {
-              playReminderChime();
+              if (state.uiSettings?.soundAlertsEnabled !== false) {
+                playReminderChime('test');
+              }
               setActiveAlertTask({
                 id: -1,
                 date: isoDate(new Date()),
@@ -1235,6 +1307,19 @@ export default function App() {
             setActiveAlertTask(null);
           }}
           onDismiss={() => setActiveAlertTask(null)}
+        />
+      )}
+
+      {/* БАННЕР ПРИБЛИЖАЮЩЕГОСЯ НАПОМИНАНИЯ (ВКЛАДЫ, КУПОНЫ, ДИВИДЕНДЫ, ПЛАТЕЖИ) */}
+      {!activeAlertTask && activeFinancialReminder && (
+        <FinancialReminderToast
+          reminder={activeFinancialReminder.reminder}
+          stage={activeFinancialReminder.stage}
+          onOpen={(rem) => {
+            handleNavigateFromHub(rem.targetTab, rem.dateIso, rem.targetSectionId);
+            setActiveFinancialReminder(null);
+          }}
+          onDismiss={() => setActiveFinancialReminder(null)}
         />
       )}
 
@@ -1437,6 +1522,9 @@ export default function App() {
           onChangeKnowledgeBase={(nextKb) =>
             commitState((prev) => ({ ...prev, knowledgeBase: nextKb }))
           }
+          onSyncNotifications={() => {
+            void syncNativeLocalNotifications(state);
+          }}
           onClose={() => setSettingsModalTab(null)}
           onShowToast={showToast}
         />

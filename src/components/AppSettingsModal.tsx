@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import {
   AlertTriangle,
+  Bell,
   BookOpen,
   Bot,
   CheckCircle2,
@@ -24,6 +25,7 @@ import {
   Sparkles,
   Trash2,
   Upload,
+  Volume2,
 } from 'lucide-react';
 import {
   AiCloudProvider,
@@ -58,6 +60,12 @@ import {
   validateSafeSourceUrl,
 } from '../utils/knowledgeBase';
 import { uid } from '../utils/finance';
+import { playReminderChime } from '../utils/sound';
+import {
+  getNotificationPermissionState,
+  isNativeNotificationsPlatform,
+  requestNotificationPermissions,
+} from '../utils/notifications';
 import { ModalShell } from './Modals';
 import { PWAInstallButton } from './PWAInstallButton';
 
@@ -71,6 +79,7 @@ interface AppSettingsModalProps {
   onCycleFont?: () => void;
   onChange: (next: UiSettings) => void;
   onChangeKnowledgeBase: (next: KnowledgeBaseState) => void;
+  onSyncNotifications?: () => void;
   onClose: () => void;
   onShowToast: (msg: string) => void;
 }
@@ -203,12 +212,16 @@ export default function AppSettingsModal({
   onCycleFont,
   onChange,
   onChangeKnowledgeBase,
+  onSyncNotifications,
   onClose,
   onShowToast,
 }: AppSettingsModalProps) {
   const [innerTab, setInnerTab] = useState<'layout' | 'ai' | 'kb'>(initialTab);
   const [llmState, setLlmState] = useState<LocalLlmState>(() => getLocalLlmState());
+  const [notifPerm, setNotifPerm] = useState<'granted' | 'denied' | 'prompt' | 'unsupported'>('prompt');
+  const [requestingNotif, setRequestingNotif] = useState(false);
   const webGpuOk = isWebGpuSupported();
+  const isNativeApk = isNativeNotificationsPlatform();
 
   // Server API status state
   const [apiStatus, setApiStatus] = useState<ServerApiStatus>({
@@ -237,6 +250,12 @@ export default function AppSettingsModal({
 
   useEffect(() => {
     return subscribeLocalLlm(setLlmState);
+  }, []);
+
+  useEffect(() => {
+    getNotificationPermissionState()
+      .then(setNotifPerm)
+      .catch(() => setNotifPerm('unsupported'));
   }, []);
 
   useEffect(() => {
@@ -709,11 +728,49 @@ export default function AppSettingsModal({
     onShowToast('Источник удалён.');
   };
 
+  const handleTestSound = () => {
+    const ok = playReminderChime('test');
+    if (ok) {
+      onShowToast('🔔 Звуковой сигнал оповещения воспроизведён.');
+    } else {
+      onShowToast('Звук заблокирован браузером — проверьте громкость устройства.');
+    }
+  };
+
+  const handleEnableSystemNotifications = async () => {
+    if (requestingNotif) return;
+    setRequestingNotif(true);
+    try {
+      const nextPerm = await requestNotificationPermissions();
+      setNotifPerm(nextPerm);
+      if (nextPerm === 'granted') {
+        if (settings.soundAlertsEnabled !== false) {
+          playReminderChime('test');
+        }
+        onSyncNotifications?.();
+        onShowToast(
+          isNativeApk
+            ? '🔔 Уведомления Android включены и синхронизированы!'
+            : '🔔 Системные уведомления включены!'
+        );
+      } else if (nextPerm === 'denied') {
+        onShowToast('Уведомления запрещены в настройках системы — работают баннеры и звук внутри приложения.');
+      } else {
+        onShowToast('Используются встроенные оповещения со звуком.');
+      }
+    } finally {
+      setRequestingNotif(false);
+    }
+  };
+
   const handleResetDefaults = () => {
     const def = createDefaultUiSettings();
     onChange({
       ...def,
       themeStyle: settings.themeStyle,
+      soundAlertsEnabled: settings.soundAlertsEnabled,
+      remindDayBefore: settings.remindDayBefore,
+      reminderHour: settings.reminderHour,
       aiMode: settings.aiMode,
       localModelId: settings.localModelId,
       aiCloudProvider: settings.aiCloudProvider,
@@ -917,6 +974,95 @@ export default function AppSettingsModal({
                 />
               </div>
             )}
+          </div>
+
+          {/* Оповещения, напоминания и звук (Web Audio API + Android LocalNotifications) */}
+          <div className="rounded-2xl bg-[var(--fld)] border border-[var(--line)] p-3 space-y-2.5">
+            <div className="flex items-center justify-between gap-2">
+              <div className="flex items-center gap-1.5 text-xs font-extrabold text-white">
+                <Bell className="w-3.5 h-3.5 text-amber-300" />
+                <span>Оповещения и звук</span>
+              </div>
+              <button
+                type="button"
+                onClick={handleTestSound}
+                className="px-2.5 py-1 rounded-lg bg-emerald-500/15 hover:bg-emerald-500/25 border border-emerald-400/35 text-[11px] font-bold text-emerald-200 flex items-center gap-1 cursor-pointer transition"
+              >
+                <Volume2 className="w-3.5 h-3.5" />
+                <span>Тест звука</span>
+              </button>
+            </div>
+
+            <div className="flex items-center justify-between gap-2 text-xs">
+              <div>
+                <div className="font-bold text-slate-100">Звук оповещений</div>
+                <div className="fin-sub">Лёгкий сигнал при наступлении задач, вкладов и выплат</div>
+              </div>
+              <ToggleSwitch
+                checked={settings.soundAlertsEnabled !== false}
+                onChange={(v) => onChange({ ...settings, soundAlertsEnabled: v })}
+                label="Звук оповещений"
+              />
+            </div>
+
+            <div className="flex items-center justify-between gap-2 text-xs pt-2 border-t border-white/10">
+              <div>
+                <div className="font-bold text-slate-100">Напоминать за 1 день («Завтра…»)</div>
+                <div className="fin-sub">За день до срока вклада, купона, дивидендов и платежей</div>
+              </div>
+              <ToggleSwitch
+                checked={settings.remindDayBefore !== false}
+                onChange={(v) => onChange({ ...settings, remindDayBefore: v })}
+                label="Напоминать за 1 день"
+              />
+            </div>
+
+            <div className="flex items-center justify-between gap-2 text-xs pt-2 border-t border-white/10">
+              <div>
+                <div className="font-bold text-slate-100">Время дневных напоминаний</div>
+                <div className="fin-sub">Для вкладов, купонов и задач без точного времени</div>
+              </div>
+              <select
+                className="fin-select text-xs py-1 px-2 tabular-nums"
+                value={settings.reminderHour ?? 9}
+                onChange={(e) =>
+                  onChange({ ...settings, reminderHour: Number(e.target.value) || 9 })
+                }
+              >
+                {[8, 9, 10, 12, 15, 18, 20].map((h) => (
+                  <option key={h} value={h}>
+                    {String(h).padStart(2, '0')}:00
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <div className="flex items-center justify-between gap-2 text-xs pt-2 border-t border-white/10">
+              <div className="min-w-0">
+                <div className="font-bold text-slate-100">
+                  {isNativeApk ? 'Уведомления Android (APK)' : 'Системные уведомления'}
+                </div>
+                <div className="fin-sub">
+                  {notifPerm === 'granted'
+                    ? 'Разрешены — ближайшие события планируются автоматически'
+                    : notifPerm === 'denied'
+                    ? 'Отключены в системе — работают баннеры и звук в приложении'
+                    : 'Разрешите для напоминаний, когда приложение свёрнуто'}
+                </div>
+              </div>
+              <button
+                type="button"
+                disabled={requestingNotif}
+                onClick={() => void handleEnableSystemNotifications()}
+                className={`px-2.5 py-1.5 rounded-lg text-[11px] font-bold shrink-0 cursor-pointer transition border ${
+                  notifPerm === 'granted'
+                    ? 'bg-emerald-500/15 border-emerald-400/35 text-emerald-200 hover:bg-emerald-500/25'
+                    : 'bg-white/10 border-white/20 text-white hover:bg-white/15'
+                }`}
+              >
+                {notifPerm === 'granted' ? 'Обновить' : 'Включить'}
+              </button>
+            </div>
           </div>
 
           {/* Разделы и вложенные окна */}

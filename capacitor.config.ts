@@ -11,6 +11,12 @@ const config: CapacitorConfig = {
   server: {
     androidScheme: 'https',
   },
+  plugins: {
+    LocalNotifications: {
+      smallIcon: 'ic_stat_finance',
+      iconColor: '#1FB892',
+    },
+  },
 };
 
 export default config;

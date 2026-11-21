@@ -45,6 +45,10 @@ import {
   uid,
 } from '../utils/finance';
 import { blobToBase64, formatDuration, playReminderChime } from '../utils/sound';
+import {
+  getNotificationPermissionState,
+  requestNotificationPermissions,
+} from '../utils/notifications';
 import GlassSection from './GlassSection';
 import { ModalShell } from './Modals';
 
@@ -372,9 +376,15 @@ export default function PlannerTab({
   const [expensePrompt, setExpensePrompt] = useState<PendingExpensePrompt | null>(null);
   const [expensePromptErr, setExpensePromptErr] = useState<string | null>(null);
 
-  const [notifPerm, setNotifPerm] = useState<NotificationPermission | 'unsupported'>(() =>
+  const [notifPerm, setNotifPerm] = useState<'granted' | 'denied' | 'default' | 'unsupported'>(() =>
     typeof window !== 'undefined' && 'Notification' in window ? Notification.permission : 'unsupported'
   );
+
+  useEffect(() => {
+    getNotificationPermissionState()
+      .then((res) => setNotifPerm(res === 'prompt' ? 'default' : res))
+      .catch(() => {});
+  }, []);
 
   // Notes multi-tab state
   const [addingTab, setAddingTab] = useState(false);
@@ -458,16 +468,16 @@ export default function PlannerTab({
   };
 
   const handleRequestNotifications = async () => {
-    if (!('Notification' in window)) {
-      onShowToast('Включены звуковые оповещения внутри приложения.');
-      return;
-    }
     try {
-      const perm = await Notification.requestPermission();
-      setNotifPerm(perm);
+      const perm = await requestNotificationPermissions();
+      setNotifPerm(perm === 'prompt' ? 'default' : perm);
       if (perm === 'granted') {
-        playReminderChime();
+        if (state.uiSettings?.soundAlertsEnabled !== false) {
+          playReminderChime('test');
+        }
         onShowToast('🔔 Оповещения включены!');
+      } else if (perm === 'unsupported') {
+        onShowToast('Включены звуковые оповещения внутри приложения.');
       } else {
         onShowToast('Оповещения будут приходить баннером со звуком внутри приложения.');
       }

@@ -1,5 +1,6 @@
 import React, { useMemo, useState } from 'react';
 import {
+  Bell,
   CalendarDays,
   ChevronDown,
   ChevronLeft,
@@ -22,6 +23,10 @@ import {
   isTaskDoneOnDate,
 } from '../utils/finance';
 import { isoDate } from '../utils/storage';
+import {
+  collectUpcomingReminders,
+  formatReminderLeadLabel,
+} from '../utils/notifications';
 
 export type HubHorizon = 'today' | 'week' | 'month';
 
@@ -32,7 +37,7 @@ interface UnifiedEvent {
   title: string;
   subtitle: string;
   amount?: number;
-  kind: 'task' | 'expense' | 'income' | 'recurring';
+  kind: 'task' | 'expense' | 'income' | 'recurring' | 'deposit' | 'payout';
   done?: boolean;
   targetTab: TabId;
   targetDate?: string;
@@ -189,14 +194,42 @@ export default function TodayCalendarHub({
       }
     });
 
+    // 4. Deposit maturities and coupon/dividend payout dates in range
+    const investReminders = collectUpcomingReminders(state, 90);
+    investReminders.forEach((rem) => {
+      if (rem.kind !== 'deposit' && rem.kind !== 'coupon' && rem.kind !== 'dividend') return;
+      if (!dateSet.has(rem.dateIso)) return;
+      out.push({
+        id: `inv-${rem.id}`,
+        date: rem.dateIso,
+        title: rem.title,
+        subtitle: rem.subtitle,
+        amount: rem.amount,
+        kind: rem.kind === 'deposit' ? 'deposit' : 'payout',
+        targetTab: 'invest',
+        targetDate: rem.dateIso,
+        targetSectionId: 'sec-inv-assets',
+      });
+    });
+
     return out.sort((a, b) => {
       if (a.date !== b.date) return a.date.localeCompare(b.date);
-      const kindOrder = { task: 0, recurring: 1, expense: 2, income: 3 };
+      const kindOrder: Record<UnifiedEvent['kind'], number> = {
+        deposit: 0,
+        payout: 1,
+        task: 2,
+        recurring: 3,
+        expense: 4,
+        income: 5,
+      };
       if (Boolean(a.done) !== Boolean(b.done)) return a.done ? 1 : -1;
       if (kindOrder[a.kind] !== kindOrder[b.kind]) return kindOrder[a.kind] - kindOrder[b.kind];
       return (a.time || '99:99').localeCompare(b.time || '99:99');
     });
-  }, [rangeDates, state.tasks, state.tx, todayIso]);
+  }, [rangeDates, state, todayIso]);
+
+  // Nearest approaching reminders (today, tomorrow, next 14 days) across tasks, payments, deposits & coupons
+  const upcomingReminders = useMemo(() => collectUpcomingReminders(state, 14), [state]);
 
   // Dots map for the mini calendar
   const calCells = useMemo(() => {
@@ -214,6 +247,14 @@ export default function TodayCalendarHub({
       txByDay.set(t.d, prev);
     });
 
+    const investDateSet = new Set<string>();
+    (state.investments?.assets || []).forEach((a) => {
+      if (a.kind === 'deposit' && a.maturityDate) investDateSet.add(a.maturityDate);
+      if ((a.kind === 'coupon' || a.kind === 'dividend') && a.nextPayoutDate) {
+        investDateSet.add(a.nextPayoutDate);
+      }
+    });
+
     const cells: {
       iso: string;
       day: number;
@@ -221,6 +262,7 @@ export default function TodayCalendarHub({
       hasTask: boolean;
       hasOut: boolean;
       hasIn: boolean;
+      hasInvest: boolean;
     }[] = [];
 
     for (let i = 0; i < 42; i++) {
@@ -235,10 +277,11 @@ export default function TodayCalendarHub({
         hasTask,
         hasOut: Boolean(txInfo?.hasOut),
         hasIn: Boolean(txInfo?.hasIn),
+        hasInvest: investDateSet.has(dIso),
       });
     }
     return cells;
-  }, [calMonth, state.tasks, state.tx]);
+  }, [calMonth, state.tasks, state.tx, state.investments]);
 
   const openTasksCount = unifiedEvents.filter((e) => e.kind === 'task' && !e.done).length;
   const recurringCount = unifiedEvents.filter((e) => e.kind === 'recurring').length;
@@ -257,6 +300,8 @@ export default function TodayCalendarHub({
     expense: { dot: '#F06253', badge: '🛒', dest: 'Расходы ↗' },
     income: { dot: '#19A886', badge: '💰', dest: 'Бюджет ↗' },
     recurring: { dot: '#E5A93B', badge: '🔁', dest: 'Расходы ↗' },
+    deposit: { dot: '#E8B44C', badge: '🏛️', dest: 'Пассив ↗' },
+    payout: { dot: '#10B981', badge: '📈', dest: 'Пассив ↗' },
   };
 
   return (
@@ -420,6 +465,7 @@ export default function TodayCalendarHub({
                           {c.hasTask && <span className="w-1 h-1 rounded-full bg-[#2AC0D4]" />}
                           {c.hasOut && <span className="w-1 h-1 rounded-full bg-[#E86A54]" />}
                           {c.hasIn && <span className="w-1 h-1 rounded-full bg-[#1FB892]" />}
+                          {c.hasInvest && <span className="w-1 h-1 rounded-full bg-[#E8B44C]" />}
                         </span>
                       </button>
                     );
@@ -474,6 +520,63 @@ export default function TodayCalendarHub({
             ) : (
               <div className="text-[11.5px] text-slate-400 py-1">
                 На этот период событий нет — добавьте трату, задачу или продиктуйте команду.
+              </div>
+            )}
+
+            {/* Ближайшие напоминания (Календарь, Вклады, Купоны, Платежи на 14 дней) */}
+            {upcomingReminders.length > 0 && (
+              <div className="pt-2 border-t border-white/[0.07] space-y-1.5">
+                <div className="flex items-center justify-between gap-2 text-[11px] font-bold text-slate-300">
+                  <span className="flex items-center gap-1.5">
+                    <Bell className="w-3.5 h-3.5 text-amber-300" />
+                    <span>Ближайшие напоминания</span>
+                  </span>
+                  <span className="text-[10.5px] text-slate-400 tabular-nums">
+                    {upcomingReminders.length} на 14 дн.
+                  </span>
+                </div>
+                <div className="flex flex-col gap-1 max-h-28 overflow-y-auto pr-0.5">
+                  {upcomingReminders.slice(0, 5).map((rem) => {
+                    const lead = formatReminderLeadLabel(rem.daysUntil, rem.dateIso);
+                    const isUrgent = rem.daysUntil === 0;
+                    const isTomorrow = rem.daysUntil === 1;
+                    return (
+                      <button
+                        key={rem.id}
+                        type="button"
+                        onClick={() =>
+                          onNavigateToTab(rem.targetTab, rem.dateIso, rem.targetSectionId)
+                        }
+                        className="w-full text-left flex items-center justify-between gap-2 px-2.5 py-1.5 rounded-xl bg-white/[0.03] hover:bg-white/[0.07] border border-white/[0.06] transition cursor-pointer"
+                      >
+                        <div className="min-w-0 flex items-center gap-2">
+                          <span
+                            className={`text-[10.5px] font-extrabold shrink-0 tabular-nums ${
+                              isUrgent
+                                ? 'text-rose-300'
+                                : isTomorrow
+                                ? 'text-amber-300'
+                                : 'text-emerald-300'
+                            }`}
+                          >
+                            {lead}
+                          </span>
+                          <span className="text-xs font-semibold text-slate-100 truncate">
+                            {rem.title}
+                          </span>
+                        </div>
+                        <div className="shrink-0 flex items-center gap-1.5">
+                          {rem.amount && rem.amount > 0 ? (
+                            <span className="text-[11px] font-num font-bold text-slate-200 tabular-nums">
+                              {formatMoney(rem.amount)}
+                            </span>
+                          ) : null}
+                          <span className="text-[10px] text-slate-500">↗</span>
+                        </div>
+                      </button>
+                    );
+                  })}
+                </div>
               </div>
             )}
 

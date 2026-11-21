@@ -1,32 +1,46 @@
-export function playReminderChime(): void {
+export function playReminderChime(variant: 'default' | 'test' | 'urgent' = 'default'): boolean {
   try {
-    const AudioCtx = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
-    if (!AudioCtx) return;
+    const AudioCtx =
+      window.AudioContext ||
+      (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+    if (!AudioCtx) return false;
     const ctx = new AudioCtx();
+    if (ctx.state === 'suspended') {
+      ctx.resume().catch(() => {});
+    }
     const now = ctx.currentTime;
 
-    const notes = [587.33, 880, 1174.66]; // D5 -> A5 -> D6 soft bell chord
+    const notes =
+      variant === 'urgent'
+        ? [659.25, 880, 1318.51] // E5 -> A5 -> E6 crisp alert triad
+        : variant === 'test'
+        ? [523.25, 659.25, 783.99, 1046.5] // C5 -> E5 -> G5 -> C6 pleasant preview chime
+        : [587.33, 880, 1174.66]; // D5 -> A5 -> D6 soft bell chord
+
+    const stepSec = variant === 'test' ? 0.095 : 0.11;
     notes.forEach((freq, idx) => {
+      const startAt = now + idx * stepSec;
       const osc = ctx.createOscillator();
       const gain = ctx.createGain();
       osc.type = 'sine';
-      osc.frequency.setValueAtTime(freq, now + idx * 0.11);
+      osc.frequency.setValueAtTime(freq, startAt);
 
-      gain.gain.setValueAtTime(0.001, now + idx * 0.11);
-      gain.gain.exponentialRampToValueAtTime(0.14, now + idx * 0.11 + 0.02);
-      gain.gain.exponentialRampToValueAtTime(0.0001, now + idx * 0.11 + 0.55);
+      gain.gain.setValueAtTime(0.001, startAt);
+      gain.gain.exponentialRampToValueAtTime(0.15, startAt + 0.02);
+      gain.gain.exponentialRampToValueAtTime(0.0001, startAt + 0.52);
 
       osc.connect(gain);
       gain.connect(ctx.destination);
-      osc.start(now + idx * 0.11);
-      osc.stop(now + idx * 0.11 + 0.6);
+      osc.start(startAt);
+      osc.stop(startAt + 0.56);
     });
 
-    setTimeout(() => {
+    window.setTimeout(() => {
       ctx.close().catch(() => {});
-    }, 1200);
+    }, 1300);
+    return true;
   } catch {
-    // Ignore audio restriction errors
+    return false;
   }
 }
 

@@ -48,6 +48,9 @@ export function createDefaultUiSettings(): UiSettings {
     aiIncludeFinanceContext: true,
     aiUseKnowledgeBase: true,
     aiCustomInstruction: '',
+    soundAlertsEnabled: true,
+    remindDayBefore: true,
+    reminderHour: 9,
   };
 }
 
@@ -288,6 +291,15 @@ export function hydrateState(raw: Partial<AppState> | null | undefined): AppStat
       typeof rawUi?.aiCustomInstruction === 'string'
         ? rawUi.aiCustomInstruction.slice(0, 800)
         : '',
+    soundAlertsEnabled: rawUi?.soundAlertsEnabled !== false,
+    remindDayBefore: rawUi?.remindDayBefore !== false,
+    reminderHour:
+      typeof rawUi?.reminderHour === 'number' &&
+      Number.isInteger(rawUi.reminderHour) &&
+      rawUi.reminderHour >= 6 &&
+      rawUi.reminderHour <= 22
+        ? rawUi.reminderHour
+        : defUi.reminderHour,
   };
 
   const rawKb = raw.knowledgeBase;
@@ -348,6 +360,15 @@ export function hydrateState(raw: Partial<AppState> | null | undefined): AppStat
               : Array.isArray(a.payoutMonths)
               ? a.payoutMonths.filter((m) => Number.isInteger(m) && m >= 1 && m <= 12)
               : [],
+          maturityDate:
+            a.kind === 'deposit' && typeof a.maturityDate === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(a.maturityDate)
+              ? a.maturityDate
+              : undefined,
+          nextPayoutDate:
+            a.kind !== 'deposit' && typeof a.nextPayoutDate === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(a.nextPayoutDate)
+              ? a.nextPayoutDate
+              : undefined,
+          remindEnabled: a.remindEnabled !== false,
           moexBoard: a.moexBoard === 'TQOB' || a.moexBoard === 'TQBR' || a.moexBoard === 'TQTF' ? a.moexBoard : undefined,
           lastUpdatedAt: typeof a.lastUpdatedAt === 'number' ? a.lastUpdatedAt : undefined,
         }))

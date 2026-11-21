@@ -7,7 +7,8 @@ import {
   InvestmentsState,
   PortfolioAsset,
 } from '../types';
-import { formatMoney, parseNum, uid } from '../utils/finance';
+import { fmtShortDate, formatMoney, parseNum, uid } from '../utils/finance';
+import { normDate } from '../utils/storage';
 import {
   analyzeInvestments,
   BROKER_OPTIONS,
@@ -69,6 +70,9 @@ export default function InvestmentsTab({
   const [formPrice, setFormPrice] = useState('');
   const [formYield, setFormYield] = useState('15.5');
   const [formMonths, setFormMonths] = useState<number[]>([6, 12]);
+  const [formMaturityDate, setFormMaturityDate] = useState('');
+  const [formNextPayoutDate, setFormNextPayoutDate] = useState('');
+  const [formRemindEnabled, setFormRemindEnabled] = useState(true);
   const [showAssetForm, setShowAssetForm] = useState(false);
 
   // Market scanner state
@@ -181,6 +185,9 @@ export default function InvestmentsTab({
     setFormPrice('');
     setFormYield(kind === 'deposit' ? '16' : kind === 'coupon' ? '15.5' : '12');
     setFormMonths(kind === 'deposit' ? [] : kind === 'coupon' ? [6, 12] : [7]);
+    setFormMaturityDate('');
+    setFormNextPayoutDate('');
+    setFormRemindEnabled(true);
   };
 
   const handleApplyPreset = (ticker: string) => {
@@ -205,6 +212,9 @@ export default function InvestmentsTab({
     setFormPrice(String(asset.price));
     setFormYield(String(asset.annualYieldPct || ''));
     setFormMonths(asset.kind === 'deposit' ? [] : [...(asset.payoutMonths || [])]);
+    setFormMaturityDate(asset.maturityDate || '');
+    setFormNextPayoutDate(asset.nextPayoutDate || '');
+    setFormRemindEnabled(asset.remindEnabled !== false);
     setShowAssetForm(true);
   };
 
@@ -236,6 +246,15 @@ export default function InvestmentsTab({
       return;
     }
 
+    const cleanMaturity =
+      formKind === 'deposit' && /^\d{4}-\d{2}-\d{2}$/.test(formMaturityDate.trim())
+        ? normDate(formMaturityDate.trim())
+        : undefined;
+    const cleanPayout =
+      formKind !== 'deposit' && /^\d{4}-\d{2}-\d{2}$/.test(formNextPayoutDate.trim())
+        ? normDate(formNextPayoutDate.trim())
+        : undefined;
+
     const payload: PortfolioAsset = {
       id: editingId ?? uid(),
       kind: formKind,
@@ -246,6 +265,9 @@ export default function InvestmentsTab({
       annualYieldPct: yieldVal,
       payoutMonths: formKind === 'deposit' ? [] : formMonths,
       moexBoard: formKind === 'coupon' ? 'TQOB' : formKind === 'dividend' ? 'TQBR' : undefined,
+      maturityDate: cleanMaturity,
+      nextPayoutDate: cleanPayout,
+      remindEnabled: formRemindEnabled,
       lastUpdatedAt: Date.now(),
     };
 
@@ -522,6 +544,9 @@ export default function InvestmentsTab({
                         <div className="text-xs opacity-80 font-semibold tabular-nums truncate">
                           {formatMoney(total)}
                           {annualInc > 0 ? ` · ~${formatMoney(Math.round(annualInc / 12))}/мес` : ' · Вклад / счёт'}
+                          {asset.maturityDate
+                            ? ` · срок: ${fmtShortDate(asset.maturityDate)}${asset.remindEnabled !== false ? ' 🔔' : ''}`
+                            : ''}
                         </div>
                       </div>
                     </div>
@@ -569,11 +594,14 @@ export default function InvestmentsTab({
                         .filter(Boolean)
                         .join(' · ')}
                     </div>
-                    {(monthsText || annualInc > 0) && (
+                    {(monthsText || annualInc > 0 || asset.nextPayoutDate) && (
                       <div className="fin-sub tabular-nums mt-0.5 truncate">
                         {[
                           annualInc > 0 ? `~${formatMoney(annualInc)}/год` : null,
-                          monthsText ? `выплаты: ${monthsText}` : null,
+                          asset.nextPayoutDate
+                            ? `ближ. выплата: ${fmtShortDate(asset.nextPayoutDate)}${asset.remindEnabled !== false ? ' 🔔' : ''}`
+                            : null,
+                          monthsText ? `месяцы: ${monthsText}` : null,
                         ]
                           .filter(Boolean)
                           .join(' · ')}
@@ -740,32 +768,76 @@ export default function InvestmentsTab({
               </div>
 
               {formKind !== 'deposit' ? (
-                <div className="space-y-1">
-                  <div className="fin-sub">Месяцы выплат:</div>
-                  <div className="grid grid-cols-6 gap-1">
-                    {MONTH_SHORT_RU.map((lbl, idx) => {
-                      const m = idx + 1;
-                      const active = formMonths.includes(m);
-                      return (
-                        <button
-                          key={m}
-                          type="button"
-                          onClick={() => toggleFormMonth(m)}
-                          className={`py-1.5 rounded-lg text-[11px] font-bold border cursor-pointer transition ${
-                            active
-                              ? 'bg-[var(--acc)] text-[var(--accInk)] border-transparent'
-                              : 'bg-[var(--fld)] border-[var(--line)] text-[var(--mute)] hover:text-white'
-                          }`}
-                        >
-                          {lbl}
-                        </button>
-                      );
-                    })}
+                <div className="space-y-2.5">
+                  <div className="space-y-1">
+                    <div className="fin-sub">Месяцы выплат:</div>
+                    <div className="grid grid-cols-6 gap-1">
+                      {MONTH_SHORT_RU.map((lbl, idx) => {
+                        const m = idx + 1;
+                        const active = formMonths.includes(m);
+                        return (
+                          <button
+                            key={m}
+                            type="button"
+                            onClick={() => toggleFormMonth(m)}
+                            className={`py-1.5 rounded-lg text-[11px] font-bold border cursor-pointer transition ${
+                              active
+                                ? 'bg-[var(--acc)] text-[var(--accInk)] border-transparent'
+                                : 'bg-[var(--fld)] border-[var(--line)] text-[var(--mute)] hover:text-white'
+                            }`}
+                          >
+                            {lbl}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 items-end">
+                    <label className="fin-sub block">
+                      Ближайшая дата выплаты (для напоминаний)
+                      <input
+                        type="date"
+                        className="fin-input w-full mt-1"
+                        value={formNextPayoutDate}
+                        onChange={(e) => setFormNextPayoutDate(e.target.value)}
+                      />
+                    </label>
+                    <label className="flex items-center gap-2 text-xs text-slate-200 cursor-pointer py-2">
+                      <input
+                        type="checkbox"
+                        checked={formRemindEnabled}
+                        onChange={(e) => setFormRemindEnabled(e.target.checked)}
+                        className="w-4 h-4 accent-emerald-500 rounded cursor-pointer"
+                      />
+                      <span>Напоминать за 1 день и в день выплаты</span>
+                    </label>
                   </div>
                 </div>
               ) : (
-                <div className="fin-sub">
-                  Вклад учитывается общей суммой в капитале без привязки к купонам и дивидендам.
+                <div className="space-y-2">
+                  <div className="fin-sub">
+                    Вклад учитывается общей суммой в капитале без привязки к купонам и дивидендам.
+                  </div>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 items-end">
+                    <label className="fin-sub block">
+                      Дата окончания / продления вклада
+                      <input
+                        type="date"
+                        className="fin-input w-full mt-1"
+                        value={formMaturityDate}
+                        onChange={(e) => setFormMaturityDate(e.target.value)}
+                      />
+                    </label>
+                    <label className="flex items-center gap-2 text-xs text-slate-200 cursor-pointer py-2">
+                      <input
+                        type="checkbox"
+                        checked={formRemindEnabled}
+                        onChange={(e) => setFormRemindEnabled(e.target.checked)}
+                        className="w-4 h-4 accent-emerald-500 rounded cursor-pointer"
+                      />
+                      <span>Напоминать за 1 день и в день срока</span>
+                    </label>
+                  </div>
                 </div>
               )}
 

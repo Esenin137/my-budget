@@ -143,6 +143,9 @@ export interface UiSettings {
   aiIncludeFinanceContext: boolean;
   aiUseKnowledgeBase: boolean;
   aiCustomInstruction: string;
+  soundAlertsEnabled: boolean;
+  remindDayBefore: boolean;
+  reminderHour: number;
 }
 
 export interface KnowledgeRule {
@@ -183,6 +186,9 @@ export interface PortfolioAsset {
   price: number;
   annualYieldPct: number;
   payoutMonths: number[]; // 1..12 for coupons/dividends; empty for bank deposits
+  maturityDate?: string; // YYYY-MM-DD (for deposits: maturity / renewal date)
+  nextPayoutDate?: string; // YYYY-MM-DD (for coupons/dividends: exact next payout date)
+  remindEnabled?: boolean;
   moexBoard?: 'TQOB' | 'TQBR' | 'TQTF';
   lastUpdatedAt?: number;
 }
