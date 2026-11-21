@@ -40,6 +40,7 @@ import {
   searchOnlineCache,
   syncEnabledOnlineSources,
 } from '../utils/knowledgeBase';
+import { analyzeInvestments, getBrokerLabel } from '../utils/investments';
 import GlassSection from './GlassSection';
 
 interface AdvisorTabProps {
@@ -178,6 +179,10 @@ export default function AdvisorTab({
       .map((d) => `${d.name}: ${Math.round(d.sum)} ₽ под ${d.rate}%`)
       .join('; ');
 
+    const invSummary = analyzeInvestments(state.investments, state.deposits);
+    const brokerName = getBrokerLabel(state.investments.broker, state.investments.brokerCustomName);
+    const investmentsSummary = `Брокер: ${brokerName}; Капитал: ${Math.round(invSummary.grandCapitalTotal)} ₽ (ОФЗ: ${Math.round(invSummary.couponsTotal)} ₽, акции: ${Math.round(invSummary.dividendsTotal)} ₽, вклады: ${Math.round(invSummary.bankDepositsTotal + invSummary.budgetDepositsTotal)} ₽, кэш: ${Math.round(invSummary.freeCash)} ₽); план ИИС: ${Math.round(state.investments.monthlyPlan)} ₽/мес (вычет 13%: +${Math.round(invSummary.iisDeduction13)} ₽/год)`;
+
     return {
       sumIn: H.sumIn,
       sumOut: H.sumOut,
@@ -188,6 +193,7 @@ export default function AdvisorTab({
       flexSum: H.flexSum,
       depositsTotal,
       depositsSummary,
+      investmentsSummary,
       topCategories,
       socialRefund: H.socialRefund,
       taxMort: H.taxMort,
@@ -207,6 +213,7 @@ export default function AdvisorTab({
       `Обязательные: ${Math.round(ctx.fixedSum)} ₽, Гибкие: ${Math.round(ctx.flexSum)} ₽`,
       `Топ трат: ${topCats || 'нет'}`,
       `Вклады: ${Math.round(ctx.depositsTotal)} ₽`,
+      `Портфель и ИИС: ${ctx.investmentsSummary}`,
       `Вычет 13% НДФЛ: ${Math.round(ctx.socialRefund)} ₽`,
     ].join('\n');
   };
@@ -776,7 +783,7 @@ export default function AdvisorTab({
               <div className="font-extrabold text-sm text-white">Персональный ИИ-Советник</div>
               <div className="fin-sub">
                 {uiSettings.aiMode === 'offline'
-                  ? `Офлайн-Советник (0 МБ)${
+                  ? `Локальный ИИ-аналитик (0 МБ)${
                       state.knowledgeBase?.rules?.length
                         ? ` · База знаний: ${state.knowledgeBase.rules.length}`
                         : ''

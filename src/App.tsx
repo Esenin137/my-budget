@@ -11,6 +11,7 @@ import {
   Settings,
   ShoppingCart,
   Smartphone,
+  TrendingUp,
   Users,
   Wallet,
 } from 'lucide-react';
@@ -53,6 +54,7 @@ import { playReminderChime } from './utils/sound';
 import PlannerTab from './components/PlannerTab';
 import BudgetTab from './components/BudgetTab';
 import ExpensesTab from './components/ExpensesTab';
+import InvestmentsTab from './components/InvestmentsTab';
 import AdvisorTab from './components/AdvisorTab';
 import FamilyTab from './components/FamilyTab';
 import { HiddenSectionsContext } from './components/GlassSection';
@@ -85,6 +87,9 @@ const ALL_SECTION_IDS = [
   'sec-exp-add',
   'sec-exp-list',
   'sec-charts',
+  'sec-inv-overview',
+  'sec-inv-assets',
+  'sec-inv-scanner',
   'sec-planner-cal',
   'sec-planner-notes',
   'sec-ai-doctor',
@@ -98,6 +103,7 @@ const ALL_SECTION_IDS = [
 const TAB_HEAD_META: Record<TabId, { title: string; accent: string }> = {
   budget: { title: 'Бюджет и Вклады', accent: '#10B981' },
   expenses: { title: 'Расходы и Чеки', accent: '#F06253' },
+  invest: { title: 'ИИС и Активы', accent: '#E8B44C' },
   planner: { title: 'Задачи и Заметки', accent: '#22D3EE' },
   advisor: { title: 'ИИ-Советник', accent: '#A78BFA' },
   family: { title: 'Семейный бюджет', accent: '#60A5FA' },
@@ -106,6 +112,7 @@ const TAB_HEAD_META: Record<TabId, { title: string; accent: string }> = {
 const NAV_ITEMS: { id: TabId; label: string; icon: React.ComponentType<{ className?: string }> }[] = [
   { id: 'budget', label: 'Бюджет', icon: Wallet },
   { id: 'expenses', label: 'Расходы', icon: ShoppingCart },
+  { id: 'invest', label: 'ИИС', icon: TrendingUp },
   { id: 'planner', label: 'Задачи', icon: CalendarCheck2 },
   { id: 'advisor', label: 'Советник', icon: Bot },
   { id: 'family', label: 'Семья', icon: Users },
@@ -114,6 +121,7 @@ const NAV_ITEMS: { id: TabId; label: string; icon: React.ComponentType<{ classNa
 const TAB_SECTIONS: Record<TabId, string[]> = {
   budget: ['sec-inc-add', 'sec-inc-list', 'sec-goals-tank', 'sec-deposits', 'sec-security'],
   expenses: ['sec-exp-add', 'sec-exp-list', 'sec-charts'],
+  invest: ['sec-inv-overview', 'sec-inv-assets', 'sec-inv-scanner'],
   planner: ['sec-planner-cal', 'sec-planner-notes'],
   advisor: ['sec-ai-doctor', 'sec-habits', 'sec-tips'],
   family: ['sec-fam-main', 'sec-fam-rem', 'sec-fam-hist'],
@@ -868,7 +876,7 @@ export default function App() {
       </div>
 
       {/* КОМПАКТНАЯ СТРОКА ВЫБОРА ПЕРИОДА (ПОКАЗЫВАЕТСЯ АККУРАТНО ДЛЯ ФИНАНСОВЫХ РАЗДЕЛОВ) */}
-      {(isDesktopVisual || activeTab !== 'planner') && (
+      {(isDesktopVisual || (activeTab !== 'planner' && activeTab !== 'invest')) && (
         <div className="hub-wrap max-w-[1560px] w-full mx-auto px-3.5 mb-2.5">
           <div className="period-bar-card">
             <div className="period-head-row">
@@ -1060,6 +1068,22 @@ export default function App() {
             onOpenDayBreakdown={(dayIso) =>
               setBreakdownModal({ kind: 'out', scope: 'day', dayIso, cat: null })
             }
+          />
+        </div>
+        )}
+
+        {state.uiSettings.visibleTabs.invest && (
+        <div className={`tab-pane ${activeTab === 'invest' ? 'active' : ''}`} id="pane-invest">
+          {renderTabHead('invest')}
+          <InvestmentsTab
+            investments={state.investments}
+            budgetDeposits={state.deposits}
+            collapsedSecs={collapsedSecs}
+            onToggleSec={toggleSection}
+            onUpdateInvestments={(nextInv) =>
+              commitState((prev) => ({ ...prev, investments: nextInv }))
+            }
+            onShowToast={showToast}
           />
         </div>
         )}

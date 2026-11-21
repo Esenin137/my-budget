@@ -1,12 +1,16 @@
 import {
   AppState,
+  AssetKind,
+  BrokerId,
   CategoryTuple,
   EncryptedPackage,
   HabitItem,
+  InvestmentsState,
   KnowledgeBaseState,
   KnowledgeRule,
   KnowledgeSource,
   NoteTab,
+  PortfolioAsset,
   UiSettings,
 } from '../types';
 
@@ -23,6 +27,7 @@ export function createDefaultUiSettings(): UiSettings {
     visibleTabs: {
       budget: true,
       expenses: true,
+      invest: true,
       planner: true,
       advisor: true,
       family: true,
@@ -80,6 +85,17 @@ export function createDefaultKnowledgeBase(): KnowledgeBaseState {
     rules: [],
     sources: DEFAULT_KNOWLEDGE_SOURCES.map((s) => ({ ...s })),
     onlineSearchEnabled: false,
+  };
+}
+
+export function createDefaultInvestments(): InvestmentsState {
+  return {
+    broker: 'sber',
+    brokerCustomName: '',
+    freeCash: 0,
+    monthlyPlan: 5000,
+    assets: [],
+    lastQuotesSyncAt: null,
   };
 }
 
@@ -146,6 +162,7 @@ export function createInitialState(): AppState {
     habits: createDefaultHabits(),
     uiSettings: createDefaultUiSettings(),
     knowledgeBase: createDefaultKnowledgeBase(),
+    investments: createDefaultInvestments(),
   };
 }
 
@@ -268,6 +285,44 @@ export function hydrateState(raw: Partial<AppState> | null | undefined): AppStat
     onlineSearchEnabled: rawKb?.onlineSearchEnabled === true,
   };
 
+  const validBrokers: BrokerId[] = ['sber', 'tbank', 'vtb', 'alfa', 'bks', 'other'];
+  const validKinds: AssetKind[] = ['coupon', 'dividend', 'deposit'];
+  const rawInv = raw.investments;
+  const defInv = createDefaultInvestments();
+  const hydratedAssets: PortfolioAsset[] = Array.isArray(rawInv?.assets)
+    ? rawInv.assets
+        .filter((a) => a && typeof a.name === 'string' && a.name.trim().length > 0)
+        .map((a) => ({
+          id: typeof a.id === 'number' ? a.id : Date.now() + Math.floor(Math.random() * 1000),
+          kind: validKinds.includes(a.kind) ? a.kind : 'coupon',
+          ticker: typeof a.ticker === 'string' ? a.ticker.trim().toUpperCase() : '',
+          name: a.name.trim(),
+          qty: a.kind === 'deposit' ? 1 : Math.max(0, Number(a.qty) || 0),
+          price: Math.max(0, Number(a.price) || 0),
+          annualYieldPct: Math.max(0, Number(a.annualYieldPct) || 0),
+          payoutMonths:
+            a.kind === 'deposit'
+              ? []
+              : Array.isArray(a.payoutMonths)
+              ? a.payoutMonths.filter((m) => Number.isInteger(m) && m >= 1 && m <= 12)
+              : [],
+          moexBoard: a.moexBoard === 'TQOB' || a.moexBoard === 'TQBR' || a.moexBoard === 'TQTF' ? a.moexBoard : undefined,
+          lastUpdatedAt: typeof a.lastUpdatedAt === 'number' ? a.lastUpdatedAt : undefined,
+        }))
+    : [];
+
+  const investments: InvestmentsState = {
+    broker: rawInv?.broker && validBrokers.includes(rawInv.broker) ? rawInv.broker : defInv.broker,
+    brokerCustomName: typeof rawInv?.brokerCustomName === 'string' ? rawInv.brokerCustomName : '',
+    freeCash: Math.max(0, Number(rawInv?.freeCash) || 0),
+    monthlyPlan:
+      typeof rawInv?.monthlyPlan === 'number' && Number.isFinite(rawInv.monthlyPlan)
+        ? Math.max(0, rawInv.monthlyPlan)
+        : defInv.monthlyPlan,
+    assets: hydratedAssets,
+    lastQuotesSyncAt: typeof rawInv?.lastQuotesSyncAt === 'number' ? rawInv.lastQuotesSyncAt : null,
+  };
+
   return {
     tx,
     budget: raw.budget || 0,
@@ -287,6 +342,7 @@ export function hydrateState(raw: Partial<AppState> | null | undefined): AppStat
     habits: Array.isArray(raw.habits) ? raw.habits : base.habits,
     uiSettings,
     knowledgeBase,
+    investments,
   };
 }
 

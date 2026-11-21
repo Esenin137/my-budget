@@ -45,6 +45,14 @@ body[data-tab="expenses"] {
   --glow: rgba(232, 106, 84, 0.30);
   --bg-glow: rgba(232, 106, 84, 0.12);
 }
+body[data-tab="invest"] {
+  --h1: #B57F1E;
+  --h2: #161108;
+  --acc: #E8B44C;
+  --accInk: #1A1203;
+  --glow: rgba(232, 180, 76, 0.30);
+  --bg-glow: rgba(232, 180, 76, 0.13);
+}
 body[data-tab="planner"] {
   --h1: #137486;
   --h2: #081418;

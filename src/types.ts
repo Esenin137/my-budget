@@ -2,7 +2,7 @@ export type TxType = 'in' | 'out';
 export type RepeatFreq = 'none' | 'weekly' | 'monthly' | 'yearly';
 export type PeriodMode = 'day' | 'week' | 'month' | 'year' | 'custom';
 export type GoalScope = 'week' | 'month' | 'year';
-export type TabId = 'budget' | 'expenses' | 'planner' | 'advisor' | 'family';
+export type TabId = 'budget' | 'expenses' | 'invest' | 'planner' | 'advisor' | 'family';
 export type FontScale = 'normal' | 'lg' | 'xl';
 
 export interface Transaction {
@@ -160,6 +160,31 @@ export interface KnowledgeBaseState {
   onlineSearchEnabled: boolean;
 }
 
+export type BrokerId = 'sber' | 'tbank' | 'vtb' | 'alfa' | 'bks' | 'other';
+export type AssetKind = 'coupon' | 'dividend' | 'deposit';
+
+export interface PortfolioAsset {
+  id: number;
+  kind: AssetKind;
+  ticker: string;
+  name: string;
+  qty: number;
+  price: number;
+  annualYieldPct: number;
+  payoutMonths: number[]; // 1..12 for coupons/dividends; empty for bank deposits
+  moexBoard?: 'TQOB' | 'TQBR' | 'TQTF';
+  lastUpdatedAt?: number;
+}
+
+export interface InvestmentsState {
+  broker: BrokerId;
+  brokerCustomName?: string;
+  freeCash: number;
+  monthlyPlan: number;
+  assets: PortfolioAsset[];
+  lastQuotesSyncAt?: number | null;
+}
+
 export interface AppState {
   tx: Transaction[];
   budget: number;
@@ -175,6 +200,7 @@ export interface AppState {
   habits: HabitItem[];
   uiSettings: UiSettings;
   knowledgeBase: KnowledgeBaseState;
+  investments: InvestmentsState;
 }
 
 export interface EncryptedPackage {

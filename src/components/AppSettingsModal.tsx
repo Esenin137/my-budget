@@ -99,6 +99,17 @@ const SECTION_GROUPS: SectionConfigGroup[] = [
     ],
   },
   {
+    tabId: 'invest',
+    icon: '📈',
+    label: 'ИИС и Активы',
+    accent: '#E8B44C',
+    sections: [
+      { id: 'sec-inv-overview', label: 'Брокер, капитал, план ИИС 13% и MOEX' },
+      { id: 'sec-inv-assets', label: 'Мои активы (Купоны, Дивиденды, Вклады)' },
+      { id: 'sec-inv-scanner', label: 'Сканер рынка и подбор покупок' },
+    ],
+  },
+  {
     tabId: 'planner',
     icon: '📅',
     label: 'Задачи и Заметки',
@@ -739,15 +750,15 @@ export default function AppSettingsModal({
               <div className="flex items-center justify-between gap-2">
                 <div className="flex items-center gap-2 font-extrabold text-xs text-white">
                   <Lock className="w-4 h-4 text-emerald-400 shrink-0" />
-                  <span>Встроенный Офлайн-Советник (0 МБ)</span>
+                  <span>Встроенный локальный ИИ-аналитик (0 МБ)</span>
                 </div>
                 <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300">
-                  100% приватно
+                  По умолчанию · 100% приватно
                 </span>
               </div>
               <div className="fin-sub mt-1">
-                Мгновенные расчёты бюджета, вычета 13% НДФЛ, подушки и вкладов прямо в устройстве.
-                Никаких запросов в интернет.
+                Мгновенный анализ бюджета, расходов, вкладов, ОФЗ, акций, вычета 13% по ИИС и
+                подушки безопасности прямо на устройстве без интернета и без сбоев видеопамяти.
               </div>
             </button>
 
@@ -922,8 +933,9 @@ export default function AppSettingsModal({
                   </span>
                 </div>
                 <div className="fin-sub mt-1">
-                  Самые точные ответы и расшифровка голосовых вопросов через защищённое серверное
-                  подключение приложения (вводить API-ключ в браузере не требуется).
+                  Точные ответы через защищённый серверный шлюз (поддерживаются Gemini и
+                  OpenAI-совместимые серверы через переменные окружения на сервере — ключи никогда
+                  не вводятся и не хранятся в браузере).
                 </div>
               </button>
 
@@ -1181,7 +1193,7 @@ export default function AppSettingsModal({
       )}
 
       <div className="mt-4 pt-3 border-t border-[var(--line)] flex items-center justify-between gap-2 text-[11px] text-slate-400">
-        <span>Версия 2.6 · База знаний + WebGPU-защита</span>
+        <span>Версия 2.7 · ИИС + База знаний + Android APK</span>
         <button
           type="button"
           onClick={async () => {

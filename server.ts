@@ -106,12 +106,67 @@ interface AdvisorContextPayload {
   flexSum?: number;
   depositsTotal?: number;
   depositsSummary?: string;
+  investmentsSummary?: string;
   topCategories?: { name: string; amount: number }[];
   socialRefund?: number;
   taxMort?: number;
   budgetLimit?: number;
   saveRuleLabel?: string | null;
   periodLabel?: string;
+}
+
+const ADVISOR_SYSTEM_INSTRUCTION =
+  'Ты — персональный финансовый советник в мобильном приложении «Мои финансы» (Россия, валюта — рубли ₽). ' +
+  'Отвечай на русском языке чётко, доброжелательно и по делу, с конкретными цифрами и практическими шагами. ' +
+  'Учитывай российскую специфику (НДФЛ 13%, налоговые вычеты, вклады, накопительные счета, ИИС, ОФЗ, фонды ликвидности, подушка безопасности, досрочное погашение кредитов). ' +
+  'Оформляй ответ компактно для экрана телефона: короткие абзацы и маркеры «•», без markdown-заголовков (#), звёздочек (**) и таблиц. ' +
+  'Обычно укладывайся в 5–10 строк, если пользователь не просит подробный план.';
+
+async function askOpenAiCompatibleServer(userPrompt: string): Promise<string> {
+  const apiKey = (process.env.OPENAI_API_KEY || '').trim();
+  if (!apiKey) {
+    throw new Error('Серверный ИИ не настроен (отсутствуют GEMINI_API_KEY и OPENAI_API_KEY).');
+  }
+  const rawBase = (process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1').trim().replace(/\/+$/, '');
+  let parsedBase: URL;
+  try {
+    parsedBase = new URL(rawBase);
+  } catch {
+    throw new Error('Некорректный адрес OPENAI_BASE_URL на сервере.');
+  }
+  if (parsedBase.protocol !== 'https:') {
+    throw new Error('OPENAI_BASE_URL должен использовать защищённый протокол HTTPS.');
+  }
+  const model = (process.env.OPENAI_MODEL || 'gpt-4o-mini').trim();
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 25000);
+  try {
+    const resp = await fetch(`${parsedBase.toString()}/chat/completions`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify({
+        model,
+        temperature: 0.35,
+        messages: [
+          { role: 'system', content: ADVISOR_SYSTEM_INSTRUCTION },
+          { role: 'user', content: userPrompt },
+        ],
+      }),
+      signal: controller.signal,
+    });
+    if (!resp.ok) {
+      throw new Error(`HTTP ${resp.status} при обращении к облачному ИИ.`);
+    }
+    const json = (await resp.json()) as {
+      choices?: { message?: { content?: string } }[];
+    };
+    return (json?.choices?.[0]?.message?.content || '').trim();
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 app.post('/api/advisor', async (req, res) => {
@@ -128,8 +183,6 @@ app.post('/api/advisor', async (req, res) => {
       return;
     }
 
-    const ai = getAiClient();
-
     const ctx = context || {};
     const topCatsText =
       Array.isArray(ctx.topCategories) && ctx.topCategories.length > 0
@@ -145,9 +198,12 @@ app.post('/api/advisor', async (req, res) => {
       `Лимит бюджета на месяц: ${Math.round(ctx.budgetLimit || 0)} ₽`,
       `Топ категорий расходов: ${topCatsText}`,
       `Вклады и накопления: ${Math.round(ctx.depositsTotal || 0)} ₽${ctx.depositsSummary ? ` (${ctx.depositsSummary})` : ''}`,
+      ctx.investmentsSummary ? `ИИС и активы: ${ctx.investmentsSummary}` : '',
       `Потенциальный социальный вычет 13% НДФЛ: ${Math.round(ctx.socialRefund || 0)} ₽; ипотечные платежи в периоде: ${Math.round(ctx.taxMort || 0)} ₽`,
       ctx.saveRuleLabel ? `Активное автоправило накопления: ${ctx.saveRuleLabel}` : 'Автоправило накопления: не задано',
-    ].join('\n');
+    ]
+      .filter(Boolean)
+      .join('\n');
 
     const recentHistory = Array.isArray(history)
       ? history
@@ -158,7 +214,7 @@ app.post('/api/advisor', async (req, res) => {
       : '';
 
     const userPrompt = [
-      'Актуальная финансовая сводка пользователя (используй эти цифры, если вопрос касается его бюджета):',
+      'Актуальная финансовая сводка пользователя (используй эти цифры, если вопрос касается его бюджета или ИИС):',
       financialSnapshot,
       recentHistory ? `\nПредыдущий контекст диалога:\n${recentHistory}` : '',
       `\nВопрос пользователя: ${cleanQuestion}`,
@@ -166,23 +222,26 @@ app.post('/api/advisor', async (req, res) => {
       .filter(Boolean)
       .join('\n');
 
-    const response = await ai.models.generateContent({
-      model: 'gemini-4-hydrogen',
-      contents: userPrompt,
-      config: {
-        systemInstruction:
-          'Ты — персональный финансовый советник в мобильном приложении «Мои финансы» (Россия, валюта — рубли ₽). ' +
-          'Отвечай на русском языке чётко, доброжелательно и по делу, с конкретными цифрами и практическими шагами. ' +
-          'Учитывай российскую специфику (НДФЛ 13%, налоговые вычеты, вклады, накопительные счета, ИИС, ОФЗ, фонды ликвидности, подушка безопасности, досрочное погашение кредитов). ' +
-          'Оформляй ответ компактно для экрана телефона: короткие абзацы и маркеры «•», без markdown-заголовков (#), звёздочек (**) и таблиц. ' +
-          'Обычно укладывайся в 5–10 строк, если пользователь не просит подробный план.',
-        thinkingConfig: {
-          thinkingLevel: ThinkingLevel.LOW,
+    let reply = '';
+    if (process.env.GEMINI_API_KEY) {
+      const ai = getAiClient();
+      const response = await ai.models.generateContent({
+        model: 'gemini-4-hydrogen',
+        contents: userPrompt,
+        config: {
+          systemInstruction: ADVISOR_SYSTEM_INSTRUCTION,
+          thinkingConfig: {
+            thinkingLevel: ThinkingLevel.LOW,
+          },
         },
-      },
-    });
+      });
+      reply = (response.text || '').trim();
+    } else if (process.env.OPENAI_API_KEY) {
+      reply = await askOpenAiCompatibleServer(userPrompt);
+    } else {
+      throw new Error('GEMINI_API_KEY не настроен на сервере.');
+    }
 
-    const reply = (response.text || '').trim();
     if (!reply) {
       res.status(502).json({ error: 'ИИ вернул пустой ответ. Попробуйте переформулировать вопрос.' });
       return;

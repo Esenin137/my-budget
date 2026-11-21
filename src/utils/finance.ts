@@ -1,5 +1,6 @@
 import { AppState, CalendarTask, CategoryTuple, HabitItem, PeriodMode, TaskRepeatFreq, Transaction } from '../types';
 import { isoDate, normDate } from './storage';
+import { analyzeInvestments, getAssetTotalValue, getBrokerLabel } from './investments';
 
 export const INC_CAT_LIST = [
   'Зарплата',
@@ -534,11 +535,44 @@ export function runLocalAdvisor(
     };
   }
 
+  const invSummary = analyzeInvestments(state.investments, state.deposits);
+
+  if (/портфел|актив|брокер|купон|дивиденд|капитал|пассивн/.test(q)) {
+    const brokerName = getBrokerLabel(state.investments.broker, state.investments.brokerCustomName);
+    const lines = [`Сводка портфеля и активов (${brokerName}):`];
+    lines.push(`• Весь капитал: ${formatMoney(invSummary.grandCapitalTotal)} (включая свободный остаток ${formatMoney(invSummary.freeCash)})`);
+    lines.push(`• Купоны (ОФЗ/облигации): ${formatMoney(invSummary.couponsTotal)} · Дивиденды (акции): ${formatMoney(invSummary.dividendsTotal)}`);
+    lines.push(`• Банковские вклады и накопительные счета: ${formatMoney(invSummary.bankDepositsTotal + invSummary.budgetDepositsTotal)}`);
+    lines.push(`• Прогноз пассивного дохода: ~${formatMoney(invSummary.monthlyPassiveIncome)}/мес (${formatMoney(invSummary.annualPassiveIncome)}/год)`);
+    if (state.investments.monthlyPlan > 0) {
+      lines.push(
+        `• План пополнения ИИС: ${formatMoney(state.investments.monthlyPlan)}/мес → налоговый вычет 13%: +${formatMoney(invSummary.iisDeduction13)}/год.`
+      );
+    }
+    if (state.investments.assets.length > 0) {
+      const top = state.investments.assets
+        .slice(0, 4)
+        .map((a) => `${a.name}: ${formatMoney(getAssetTotalValue(a))}`)
+        .join(', ');
+      lines.push(`• Позиции: ${top}`);
+    }
+    return {
+      matched: true,
+      sourceLabel: 'Личные финансы · Раздел «ИИС и Активы»',
+      reply: lines.join('\n'),
+    };
+  }
+
   if (/вычет|13%|налог|ндфл|вернут|логопед|лечен/.test(q)) {
-    const lines = ['Как вернуть деньги налоговым вычетом 13% по вашим записям:'];
+    const lines = ['Как вернуть деньги налоговым вычетом 13% по вашим данным:'];
+    if (invSummary.iisDeduction13 > 0) {
+      lines.push(
+        `• По ИИС (план ${formatMoney(state.investments.monthlyPlan)}/мес = ${formatMoney(invSummary.annualIisContribution)}/год): возврат 13% составит +${formatMoney(invSummary.iisDeduction13)}/год.`
+      );
+    }
     if (H.taxEdu > 0 || H.taxMed > 0) {
       lines.push(
-        `• Найдено трат на обучение и медицину: ${formatMoney(H.taxEdu + H.taxMed)} — ориентировочный возврат +${formatMoney(H.socialRefund)}.`
+        `• По обучению и медицине найдено трат: ${formatMoney(H.taxEdu + H.taxMed)} — ориентировочный возврат +${formatMoney(H.socialRefund)}.`
       );
     } else {
       lines.push(
@@ -553,7 +587,7 @@ export function runLocalAdvisor(
     lines.push('Совет: прикрепляйте фото чеков прямо в разделе «Расходы», чтобы всё было под рукой при подаче декларации в ФНС.');
     return {
       matched: true,
-      sourceLabel: 'Личные финансы · Расчёт вычета 13% НДФЛ',
+      sourceLabel: 'Личные финансы · Расчёт вычета 13% НДФЛ и ИИС',
       reply: lines.join('\n'),
     };
   }
@@ -584,44 +618,56 @@ export function runLocalAdvisor(
     const minPad = baseMonth * 3;
     const optPad = baseMonth * 6;
     const curSaved =
-      state.deposits.reduce((a, d) => a + (d.sum || 0), 0) + (state.family.totalSavings || 0);
+      invSummary.bankDepositsTotal +
+      invSummary.budgetDepositsTotal +
+      invSummary.freeCash +
+      (state.family.totalSavings || 0);
     const pctReady = minPad > 0 ? Math.min(100, Math.round((curSaved / minPad) * 100)) : 0;
     return {
       matched: true,
-      sourceLabel: 'Личные финансы · Вклады и семейные накопления',
+      sourceLabel: 'Личные финансы · Вклады, свободный кэш и семейные накопления',
       reply: `Расчёт подушки безопасности:\n• Базовые расходы в месяц: ${formatMoney(baseMonth)}\n• Минимум на 3 месяца: ${formatMoney(minPad)} (собрано ${formatMoney(curSaved)} — ${pctReady}%)\n• Комфорт на 6 месяцев: ${formatMoney(optPad)}\nДержите резерв на накопительном счёте с ежедневным остатком или в фондах ликвидности.`,
     };
   }
 
-  if (/выгодн|вклад\s*vs|sbmm|lqdt|иис|офз/.test(q) && !/лимит\S*\s+иис|закон|правил\S*\s+иис|новы\S*\s+иис|иис-?3/.test(q)) {
-    const investBase = H.left > 0 ? H.left : 5000;
+  if (/выгодн|вклад\s*vs|sbmm|lqdt|иис|офз|акци/.test(q) && !/лимит\S*\s+иис|закон|правил\S*\s+иис|новы\S*\s+иис|иис-?3/.test(q)) {
+    const investBase = invSummary.freeCash > 0 ? invSummary.freeCash : H.left > 0 ? H.left : state.investments.monthlyPlan || 5000;
     const dep1Y = Math.round(investBase * 1.17);
     const iis1Y = Math.round(investBase * 1.16 + investBase * 0.13);
+    const ownLine =
+      invSummary.investedSecuritiesTotal > 0
+        ? `\n• Сейчас в вашем портфеле: ОФЗ ${formatMoney(invSummary.couponsTotal)}, акции ${formatMoney(invSummary.dividendsTotal)}, вычет 13% по плану ИИС: +${formatMoney(invSummary.iisDeduction13)}/год.`
+        : '';
     return {
       matched: true,
-      sourceLabel: 'Личные финансы · Калькулятор Вклад / ИИС / ОФЗ',
-      reply: `Сравнение на сумме ${formatMoney(investBase)}:\n1. Накопительный счёт / фонд ликвидности (~16–17%): через год ~${formatMoney(dep1Y)}, доступ в любой день.\n2. ОФЗ на ИИС (~16% + вычет 13% НДФЛ): в первый год отдача до ~${formatMoney(iis1Y)}.\nПравило: сначала подушка на 3 месяца на вкладе, затем регулярные пополнения ИИС.`,
+      sourceLabel: 'Личные финансы · Раздел «ИИС и Активы»',
+      reply: `Сравнение на сумме ${formatMoney(investBase)}:\n1. Накопительный счёт / фонд ликвидности (~16–17%): через год ~${formatMoney(dep1Y)}, доступ в любой день.\n2. ОФЗ на ИИС (~16% + вычет 13% НДФЛ): в первый год отдача до ~${formatMoney(iis1Y)}.${ownLine}\nПравило: сначала подушка на 3 месяца на вкладе, затем регулярные пополнения ИИС (подбор бумаг доступен во вкладке «ИИС и Активы → Сканер рынка»).`,
     };
   }
 
   if (/мои вклад|вклады|депозит|копилк|накоплени|сбережени/.test(q)) {
-    const depTotal = state.deposits.reduce((sum, d) => sum + (d.sum || 0), 0);
+    const depTotal = invSummary.budgetDepositsTotal + invSummary.bankDepositsTotal;
     const famSaved = state.family.totalSavings || 0;
     const lines = ['Ваши вклады и сбережения:'];
     if (state.deposits.length > 0) {
       state.deposits.forEach((d) => {
         lines.push(`• ${d.name}: ${formatMoney(d.sum)} под ${d.rate}%${d.rule ? ` (${d.rule})` : ''}`);
       });
-    } else {
-      lines.push('• В разделе «Бюджет → Вклады» пока нет добавленных вкладов.');
+    }
+    const invBankDeps = state.investments.assets.filter((a) => a.kind === 'deposit');
+    invBankDeps.forEach((a) => {
+      lines.push(`• ${a.name} (ИИС и Активы): ${formatMoney(a.price)}${a.annualYieldPct ? ` под ${a.annualYieldPct}%` : ''}`);
+    });
+    if (state.deposits.length === 0 && invBankDeps.length === 0) {
+      lines.push('• Пока нет добавленных банковских вкладов (их можно внести в «Бюджете» или «ИИС и Активы»).');
     }
     if (famSaved > 0) {
       lines.push(`• Семейные накопления («Семья»): ${formatMoney(famSaved)}`);
     }
-    lines.push(`• Итого сбережений: ${formatMoney(depTotal + famSaved)}`);
+    lines.push(`• Итого вкладов и накоплений: ${formatMoney(depTotal + famSaved)}`);
     return {
       matched: true,
-      sourceLabel: 'Личные финансы · Раздел «Вклады и сбережения»',
+      sourceLabel: 'Личные финансы · Разделы «Вклады» и «ИИС и Активы»',
       reply: lines.join('\n'),
     };
   }
