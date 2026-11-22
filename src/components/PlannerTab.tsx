@@ -49,6 +49,11 @@ import {
   getNotificationPermissionState,
   requestNotificationPermissions,
 } from '../utils/notifications';
+import {
+  ensureMicrophonePermission,
+  isNativeAndroidHardware,
+  openAndroidAppSettings,
+} from '../utils/nativeHardware';
 import GlassSection from './GlassSection';
 import { ModalShell } from './Modals';
 
@@ -399,6 +404,7 @@ export default function PlannerTab({
   const [recordSec, setRecordSec] = useState(0);
   const [liveLevels, setLiveLevels] = useState<number[]>(Array(16).fill(18));
   const [recError, setRecError] = useState<string | null>(null);
+  const [recMicDenied, setRecMicDenied] = useState(false);
   const [transcribingIds, setTranscribingIds] = useState<Record<number, boolean>>({});
   const [transcribeErrors, setTranscribeErrors] = useState<Record<number, string>>({});
 
@@ -595,6 +601,15 @@ export default function PlannerTab({
 
   const startVoiceRecording = async () => {
     setRecError(null);
+    setRecMicDenied(false);
+
+    const perm = await ensureMicrophonePermission();
+    if (!perm.granted) {
+      setRecMicDenied(true);
+      setRecError('Нет доступа к микрофону. Разрешите микрофон в настройках Android.');
+      return;
+    }
+
     if (!navigator.mediaDevices?.getUserMedia) {
       setRecError('Микрофон недоступен в этом браузере.');
       return;
@@ -693,6 +708,7 @@ export default function PlannerTab({
     } catch {
       cleanupRecording();
       setIsRecording(false);
+      if (isNativeAndroidHardware()) setRecMicDenied(true);
       setRecError('Разрешите доступ к микрофону для записи голосовой заметки.');
     }
   };
@@ -1461,7 +1477,20 @@ export default function PlannerTab({
           </div>
         )}
 
-        {recError && <div className="text-xs text-rose-400">{recError}</div>}
+        {recError && (
+          <div className="space-y-1.5">
+            <div className="text-xs text-rose-400">{recError}</div>
+            {recMicDenied && isNativeAndroidHardware() && (
+              <button
+                type="button"
+                onClick={() => void openAndroidAppSettings()}
+                className="py-1.5 px-2.5 rounded-lg bg-amber-500/20 hover:bg-amber-500/30 border border-amber-400/40 text-xs font-bold text-amber-100 cursor-pointer transition"
+              >
+                ⚙️ Открыть настройки разрешений Android
+              </button>
+            )}
+          </div>
+        )}
 
         {/* Список заметок активной вкладки */}
         <div className="space-y-2 max-h-80 overflow-y-auto pr-0.5">

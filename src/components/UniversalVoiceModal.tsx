@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { Check, Loader2, Mic, Sparkles, Square } from 'lucide-react';
+import { Check, Loader2, Mic, Settings, Sparkles, Square } from 'lucide-react';
 import { AiMode, CategoryTuple } from '../types';
 import {
   fmtHumanDate,
@@ -9,6 +9,12 @@ import {
   parseUniversalCommand,
   UniversalCommandResult,
 } from '../utils/finance';
+import {
+  ensureMicrophonePermission,
+  isNativeAndroidHardware,
+  openAndroidAppSettings,
+  recognizeSpeechOnAndroid,
+} from '../utils/nativeHardware';
 import { blobToBase64, formatDuration } from '../utils/sound';
 import { ModalShell } from './Modals';
 
@@ -39,6 +45,7 @@ export default function UniversalVoiceModal({
   const [recordSec, setRecordSec] = useState(0);
   const [isTranscribing, setIsTranscribing] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [micDenied, setMicDenied] = useState(false);
 
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const mediaStreamRef = useRef<MediaStream | null>(null);
@@ -128,7 +135,8 @@ export default function UniversalVoiceModal({
         const code = ev?.error || '';
         if (code === 'aborted') return;
         if (code === 'not-allowed' || code === 'service-not-allowed') {
-          setError('Нет доступа к микрофону. Разрешите микрофон в настройках браузера.');
+          if (isNativeAndroidHardware()) setMicDenied(true);
+          setError('Нет доступа к микрофону. Разрешите микрофон в настройках устройства.');
         } else if (code === 'no-speech') {
           setError('Речь не услышана. Нажмите на микрофон и произнесите фразу чётче.');
         } else {
@@ -151,6 +159,7 @@ export default function UniversalVoiceModal({
 
   const handleToggleMic = async () => {
     setError(null);
+    setMicDenied(false);
     if (isRecording) {
       if (speechRecRef.current) {
         try {
@@ -168,6 +177,32 @@ export default function UniversalVoiceModal({
 
     const isStaticHost =
       typeof window !== 'undefined' && /\.github\.io$|\.pages\.dev$|\.netlify\.app$/i.test(window.location.hostname);
+
+    // Native Android APK: prefer system speech recognizer for local/offline mode
+    if (isNativeAndroidHardware() && (aiMode !== 'cloud' || isStaticHost)) {
+      const nativeRes = await recognizeSpeechOnAndroid('Продиктуйте команду');
+      if (nativeRes.denied) {
+        setMicDenied(true);
+        setError('Нет доступа к микрофону. Разрешите микрофон в настройках Android.');
+        return;
+      }
+      if (nativeRes.supported) {
+        if (nativeRes.text) {
+          setPhrase(nativeRes.text);
+        } else if (!nativeRes.cancelled) {
+          setError('Речь не услышана. Нажмите на микрофон и произнесите фразу чётче.');
+        }
+        return;
+      }
+    }
+
+    // Request native Android RECORD_AUDIO permission before WebView mic access
+    const perm = await ensureMicrophonePermission();
+    if (!perm.granted) {
+      setMicDenied(true);
+      setError('Нет доступа к микрофону. Разрешите микрофон в настройках Android.');
+      return;
+    }
 
     // Use local browser SpeechRecognition if offline/local-llm mode or on static hosting without /api/transcribe
     if (aiMode !== 'cloud' || isStaticHost) {
@@ -285,8 +320,18 @@ export default function UniversalVoiceModal({
       />
 
       {error && (
-        <div className="rounded-xl bg-rose-500/15 border border-rose-400/35 px-3 py-2 text-xs text-rose-200">
-          {error}
+        <div className="rounded-xl bg-rose-500/15 border border-rose-400/35 px-3 py-2 text-xs text-rose-200 space-y-2">
+          <div>{error}</div>
+          {micDenied && isNativeAndroidHardware() && (
+            <button
+              type="button"
+              onClick={() => void openAndroidAppSettings()}
+              className="w-full py-1.5 px-2.5 rounded-lg bg-amber-500/20 hover:bg-amber-500/30 border border-amber-400/40 text-xs font-bold text-amber-100 flex items-center justify-center gap-1.5 cursor-pointer transition"
+            >
+              <Settings className="w-3.5 h-3.5" />
+              <span>Открыть настройки разрешений Android</span>
+            </button>
+          )}
         </div>
       )}
 

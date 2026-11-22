@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { Camera, Mic, Pencil, Search, Trash2, X } from 'lucide-react';
+import { Camera, Image as ImageIcon, Loader2, Mic, Pencil, QrCode, Search, Settings, Trash2, X } from 'lucide-react';
 import { CategoryTuple, PeriodMode, RepeatFreq, Transaction } from '../types';
 import {
   CAT_ICON,
@@ -11,8 +11,17 @@ import {
   parsePhrase,
   uid,
 } from '../utils/finance';
+import {
+  ensureCameraPermission,
+  ensureMicrophonePermission,
+  isNativeAndroidHardware,
+  openAndroidAppSettings,
+  parseFnsReceiptQr,
+  recognizeSpeechOnAndroid,
+} from '../utils/nativeHardware';
 import { isoDate, normDate } from '../utils/storage';
 import GlassSection from './GlassSection';
+import { ModalShell } from './Modals';
 
 interface ExpensesTabProps {
   cats: CategoryTuple[];
@@ -58,8 +67,31 @@ export default function ExpensesTab({
   const [pendingImg, setPendingImg] = useState<string | null>(null);
   const [listening, setListening] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
+  const [hardwareDenied, setHardwareDenied] = useState<'mic' | 'camera' | null>(null);
+  const [qrModalOpen, setQrModalOpen] = useState(false);
+  const [qrLoading, setQrLoading] = useState(false);
+  const [qrError, setQrError] = useState<string | null>(null);
+  const [qrLiveDetectSupported, setQrLiveDetectSupported] = useState(false);
 
   const recRef = useRef<{ stop: () => void; abort?: () => void } | null>(null);
+  const qrVideoRef = useRef<HTMLVideoElement | null>(null);
+  const qrStreamRef = useRef<MediaStream | null>(null);
+  const qrTimerRef = useRef<number | null>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+
+  const stopQrCamera = () => {
+    if (qrTimerRef.current) {
+      window.clearInterval(qrTimerRef.current);
+      qrTimerRef.current = null;
+    }
+    if (qrStreamRef.current) {
+      qrStreamRef.current.getTracks().forEach((tr) => tr.stop());
+      qrStreamRef.current = null;
+    }
+    if (qrVideoRef.current) {
+      qrVideoRef.current.srcObject = null;
+    }
+  };
 
   useEffect(() => {
     if (!previewItems) {
@@ -69,6 +101,7 @@ export default function ExpensesTab({
 
   useEffect(() => {
     return () => {
+      stopQrCamera();
       if (recRef.current) {
         try {
           if (recRef.current.abort) recRef.current.abort();
@@ -80,6 +113,60 @@ export default function ExpensesTab({
       }
     };
   }, []);
+
+  const detectQrFromSource = async (source: ImageBitmapSource): Promise<string | null> => {
+    type BarcodeDetectorCtor = new (opts?: { formats?: string[] }) => {
+      detect: (src: ImageBitmapSource) => Promise<Array<{ rawValue?: string }>>;
+    };
+    const BD = (window as unknown as { BarcodeDetector?: BarcodeDetectorCtor }).BarcodeDetector;
+    if (!BD) return null;
+    try {
+      const detector = new BD({ formats: ['qr_code'] });
+      const codes = await detector.detect(source);
+      const first = codes.find((c) => typeof c.rawValue === 'string' && c.rawValue.trim().length > 0);
+      return first?.rawValue?.trim() || null;
+    } catch {
+      return null;
+    }
+  };
+
+  const applyScannedReceipt = (imgDataUrl: string | null, rawQr: string | null) => {
+    if (imgDataUrl) setPendingImg(imgDataUrl);
+    const parsedQr = rawQr ? parseFnsReceiptQr(rawQr) : null;
+    if (parsedQr) {
+      const d = parsedQr.dateIso || isoDate(curDate);
+      setPreviewDate(d);
+      setPreviewMethod('Карта');
+      setPreviewItems([
+        {
+          a: parsedQr.amount || 0,
+          n: parsedQr.time ? `Чек по QR (${parsedQr.time})` : 'Чек по QR',
+          c: 'Еда',
+        },
+      ]);
+      setHint(
+        parsedQr.amount
+          ? `✅ QR чека считан: ${formatMoney(parsedQr.amount)} за ${fmtShortDate(d)}. Выберите категорию и нажмите Сохранить.`
+          : `✅ Дата чека из QR (${fmtShortDate(d)}) считана! Впишите сумму и сохраните.`
+      );
+      return;
+    }
+
+    setPreviewDate(isoDate(curDate));
+    setPreviewMethod('Карта');
+    setPreviewItems([
+      {
+        a: 0,
+        n: rawQr ? `Чек (QR: ${rawQr.slice(0, 32)})` : 'Чек из магазина',
+        c: 'Еда',
+      },
+    ]);
+    setHint(
+      rawQr
+        ? '📷 QR считан (нестандартный формат). Укажите сумму и сохраните.'
+        : '📷 Фото чека прикреплено! Укажите сумму и сохраните.'
+    );
+  };
 
   const runParse = (inputStr?: string) => {
     const raw = (inputStr ?? sayText).trim();
@@ -99,7 +186,48 @@ export default function ExpensesTab({
     );
   };
 
-  const handleVoicePhrase = () => {
+  const handleVoicePhrase = async () => {
+    setHardwareDenied(null);
+
+    if (listening && recRef.current) {
+      try {
+        recRef.current.stop();
+      } catch {
+        // ignore
+      }
+      setListening(false);
+      return;
+    }
+
+    // Native Android APK: request RECORD_AUDIO & launch system speech recognizer directly
+    if (isNativeAndroidHardware()) {
+      setHint('Запрашиваю микрофон и запускаю распознавание…');
+      const nativeRes = await recognizeSpeechOnAndroid('Продиктуйте трату, например: молоко 120 рублей');
+      if (nativeRes.denied) {
+        setHardwareDenied('mic');
+        setHint('Нет доступа к микрофону. Разрешите микрофон в настройках Android.');
+        return;
+      }
+      if (nativeRes.supported) {
+        if (nativeRes.text) {
+          setSayText(nativeRes.text);
+          runParse(nativeRes.text);
+        } else if (nativeRes.cancelled) {
+          setHint('Голосовой ввод отменён.');
+        } else {
+          setHint('Речь не услышана. Нажмите «Говорить» и повторите.');
+        }
+        return;
+      }
+      // Fallback if device lacks RecognizerIntent app: still ensure RECORD_AUDIO permission
+      const perm = await ensureMicrophonePermission();
+      if (!perm.granted) {
+        setHardwareDenied('mic');
+        setHint('Нет доступа к микрофону. Разрешите микрофон в настройках Android.');
+        return;
+      }
+    }
+
     type RecInstance = {
       lang: string;
       interimResults: boolean;
@@ -121,15 +249,6 @@ export default function ExpensesTab({
     const SR = w.SpeechRecognition || w.webkitSpeechRecognition;
     if (!SR) {
       setHint('Голосовой ввод недоступен. Введите текст и нажмите «Разобрать».');
-      return;
-    }
-    if (listening && recRef.current) {
-      try {
-        recRef.current.stop();
-      } catch {
-        // ignore
-      }
-      setListening(false);
       return;
     }
     try {
@@ -166,7 +285,8 @@ export default function ExpensesTab({
         const code = e?.error || '';
         if (code === 'aborted') return;
         if (code === 'not-allowed' || code === 'service-not-allowed') {
-          setHint('Нет доступа к микрофону. Разрешите микрофон в браузере.');
+          if (isNativeAndroidHardware()) setHardwareDenied('mic');
+          setHint('Нет доступа к микрофону. Разрешите микрофон в настройках устройства.');
         } else if (code === 'no-speech') {
           setHint('Речь не услышана. Нажмите на микрофон и повторите.');
         } else {
@@ -189,13 +309,138 @@ export default function ExpensesTab({
     }
   };
 
+  const handleCloseQrModal = () => {
+    stopQrCamera();
+    setQrModalOpen(false);
+    setQrLoading(false);
+    setQrError(null);
+  };
+
+  const openQrScannerModal = async () => {
+    setHardwareDenied(null);
+    setQrError(null);
+    setQrModalOpen(true);
+    setQrLoading(true);
+
+    const perm = await ensureCameraPermission();
+    if (!perm.granted) {
+      setQrLoading(false);
+      setHardwareDenied('camera');
+      setQrError('Нет доступа к камере. Разрешите камеру для сканирования QR-кодов и фото чеков.');
+      return;
+    }
+
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      setQrLoading(false);
+      setQrError('Прямой видеопоток камеры недоступен. Используйте кнопку «Камера / галерея» ниже.');
+      return;
+    }
+
+    try {
+      let stream: MediaStream;
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode: { ideal: 'environment' } },
+          audio: false,
+        });
+      } catch {
+        stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
+      }
+      qrStreamRef.current = stream;
+
+      const attachAndStart = () => {
+        const videoEl = qrVideoRef.current;
+        if (!videoEl) return;
+        videoEl.srcObject = stream;
+        void videoEl.play().catch(() => {});
+      };
+      // Attach immediately and on next frame in case modal DOM just mounted
+      attachAndStart();
+      window.requestAnimationFrame(attachAndStart);
+      setQrLoading(false);
+
+      const hasBarcodeDetector =
+        typeof (window as unknown as { BarcodeDetector?: unknown }).BarcodeDetector === 'function';
+      setQrLiveDetectSupported(hasBarcodeDetector);
+
+      if (hasBarcodeDetector) {
+        let busy = false;
+        qrTimerRef.current = window.setInterval(async () => {
+          if (busy) return;
+          const videoEl = qrVideoRef.current;
+          if (!videoEl || videoEl.readyState < 2 || videoEl.videoWidth === 0) return;
+          busy = true;
+          try {
+            const rawQr = await detectQrFromSource(videoEl);
+            if (rawQr) {
+              // Capture compressed snapshot from live video before closing
+              const c = document.createElement('canvas');
+              const max = 700;
+              let w = videoEl.videoWidth;
+              let h = videoEl.videoHeight;
+              if (w > max) {
+                h = Math.round((h * max) / w);
+                w = max;
+              }
+              c.width = w;
+              c.height = h;
+              c.getContext('2d')?.drawImage(videoEl, 0, 0, w, h);
+              const snapshot = c.toDataURL('image/jpeg', 0.62);
+              handleCloseQrModal();
+              applyScannedReceipt(snapshot, rawQr);
+            }
+          } finally {
+            busy = false;
+          }
+        }, 380);
+      }
+    } catch {
+      stopQrCamera();
+      setQrLoading(false);
+      if (isNativeAndroidHardware()) setHardwareDenied('camera');
+      setQrError(
+        'Не удалось открыть камеру. Проверьте разрешение камеры или выберите фото через «Камера / галерея».'
+      );
+    }
+  };
+
+  const handleCaptureLivePhoto = async () => {
+    const videoEl = qrVideoRef.current;
+    if (!videoEl || videoEl.videoWidth === 0) return;
+    const c = document.createElement('canvas');
+    const max = 700;
+    let w = videoEl.videoWidth;
+    let h = videoEl.videoHeight;
+    if (w > max) {
+      h = Math.round((h * max) / w);
+      w = max;
+    }
+    c.width = w;
+    c.height = h;
+    c.getContext('2d')?.drawImage(videoEl, 0, 0, w, h);
+    const snapshot = c.toDataURL('image/jpeg', 0.62);
+    const rawQr = await detectQrFromSource(c);
+    handleCloseQrModal();
+    applyScannedReceipt(snapshot, rawQr);
+  };
+
+  const handleTriggerFileCapture = async () => {
+    const perm = await ensureCameraPermission();
+    if (!perm.granted) {
+      setHardwareDenied('camera');
+      setQrError('Нет доступа к камере. Разрешите камеру в настройках Android.');
+      return;
+    }
+    fileInputRef.current?.click();
+  };
+
   const handleReceiptPhoto = (file: File) => {
     const reader = new FileReader();
     reader.onload = (ev) => {
       const src = typeof ev.target?.result === 'string' ? ev.target.result : '';
       if (!src) return;
       const img = new Image();
-      img.onload = () => {
+      img.onload = async () => {
         const c = document.createElement('canvas');
         const max = 700;
         let w = img.width;
@@ -207,11 +452,10 @@ export default function ExpensesTab({
         c.width = w;
         c.height = h;
         c.getContext('2d')?.drawImage(img, 0, 0, w, h);
-        setPendingImg(c.toDataURL('image/jpeg', 0.62));
-        setPreviewDate(isoDate(curDate));
-        setPreviewMethod('Карта');
-        setPreviewItems([{ a: 0, n: 'Чек из магазина', c: 'Еда' }]);
-        setHint('📷 Фото чека прикреплено! Укажите сумму и сохраните.');
+        const compressed = c.toDataURL('image/jpeg', 0.62);
+        const rawQr = (await detectQrFromSource(img)) || (await detectQrFromSource(c));
+        handleCloseQrModal();
+        applyScannedReceipt(compressed, rawQr);
       };
       img.src = src;
     };
@@ -336,30 +580,32 @@ export default function ExpensesTab({
         onToggleCollapse={onToggleSec}
       >
         <div className="grid grid-cols-2 gap-2.5">
-          <button type="button" onClick={handleVoicePhrase} className="mic-tile">
+          <button type="button" onClick={() => void handleVoicePhrase()} className="mic-tile">
             <span className={`mic-orb ${listening ? 'rec' : ''}`}>
               <Mic className="w-7 h-7" />
             </span>
             <span>{listening ? 'Стоп' : 'Говорить'}</span>
           </button>
 
-          <label className="cam-tile">
+          <button type="button" onClick={() => void openQrScannerModal()} className="cam-tile">
             <span className="w-13 h-13 rounded-2xl bg-white/8 border border-white/15 flex items-center justify-center">
-              <Camera className="w-6 h-6" />
+              <QrCode className="w-6 h-6" />
             </span>
             <span>Снять чек / QR</span>
-            <input
-              type="file"
-              accept="image/*"
-              capture="environment"
-              className="hidden"
-              onChange={(e) => {
-                const f = e.target.files?.[0];
-                if (f) handleReceiptPhoto(f);
-                e.target.value = '';
-              }}
-            />
-          </label>
+          </button>
+
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept="image/*"
+            capture="environment"
+            className="hidden"
+            onChange={(e) => {
+              const f = e.target.files?.[0];
+              if (f) handleReceiptPhoto(f);
+              e.target.value = '';
+            }}
+          />
         </div>
 
         <form
@@ -381,6 +627,17 @@ export default function ExpensesTab({
         </form>
 
         {hint && <div className="fin-sub">{hint}</div>}
+
+        {hardwareDenied && isNativeAndroidHardware() && (
+          <button
+            type="button"
+            onClick={() => void openAndroidAppSettings()}
+            className="w-full py-2 px-3 rounded-xl bg-amber-500/15 hover:bg-amber-500/25 border border-amber-400/35 text-xs font-bold text-amber-100 flex items-center justify-center gap-1.5 cursor-pointer transition"
+          >
+            <Settings className="w-3.5 h-3.5" />
+            <span>Открыть настройки разрешений Android</span>
+          </button>
+        )}
 
         {previewItems && (
           <div className="space-y-2 pt-2 border-t border-[var(--line)]">
@@ -661,6 +918,75 @@ export default function ExpensesTab({
           ))}
         </div>
       </GlassSection>
+
+      {qrModalOpen && (
+        <ModalShell title="📷 Сканер QR-кода и чеков" onClose={handleCloseQrModal}>
+          <div className="space-y-3">
+            <div className="relative rounded-2xl overflow-hidden bg-black/75 border border-white/15 aspect-[4/3] flex items-center justify-center">
+              <video
+                ref={qrVideoRef}
+                playsInline
+                muted
+                autoPlay
+                className="w-full h-full object-cover"
+              />
+              {qrLoading && (
+                <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 bg-black/65 text-xs text-slate-200">
+                  <Loader2 className="w-6 h-6 animate-spin text-emerald-400" />
+                  <span>Запрашиваю доступ к камере…</span>
+                </div>
+              )}
+              {!qrLoading && !qrError && (
+                <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
+                  <div className="w-44 h-44 rounded-2xl border-2 border-emerald-400/80 shadow-[0_0_0_9999px_rgba(0,0,0,0.32)]" />
+                </div>
+              )}
+            </div>
+
+            {qrError ? (
+              <div className="rounded-xl bg-rose-500/15 border border-rose-400/35 px-3 py-2 text-xs text-rose-200 space-y-2">
+                <div>{qrError}</div>
+                {hardwareDenied === 'camera' && isNativeAndroidHardware() && (
+                  <button
+                    type="button"
+                    onClick={() => void openAndroidAppSettings()}
+                    className="w-full py-1.5 px-2.5 rounded-lg bg-amber-500/20 hover:bg-amber-500/30 border border-amber-400/40 text-xs font-bold text-amber-100 flex items-center justify-center gap-1.5 cursor-pointer transition"
+                  >
+                    <Settings className="w-3.5 h-3.5" />
+                    <span>Открыть настройки разрешений Android</span>
+                  </button>
+                )}
+              </div>
+            ) : (
+              <div className="fin-sub text-center">
+                {qrLiveDetectSupported
+                  ? 'Наведите рамку на QR-код кассового чека ФНС — сумма и дата подставятся автоматически.'
+                  : 'Наведите камеру на чек и нажмите «Сделать фото чека».'}
+              </div>
+            )}
+
+            <div className="grid grid-cols-2 gap-2">
+              <button
+                type="button"
+                disabled={qrLoading || Boolean(qrError)}
+                onClick={() => void handleCaptureLivePhoto()}
+                className="fin-btn flex items-center justify-center gap-1.5 disabled:opacity-45"
+              >
+                <Camera className="w-4 h-4" />
+                <span>Фото чека</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => void handleTriggerFileCapture()}
+                className="fin-btn ghost flex items-center justify-center gap-1.5"
+              >
+                <ImageIcon className="w-4 h-4" />
+                <span>Галерея / камера</span>
+              </button>
+            </div>
+          </div>
+        </ModalShell>
+      )}
     </>
   );
 }

@@ -121,3 +121,30 @@ describe('Бюджет и безопасный дневной лимит (analyz
     expect(isTxInPeriod('2026-04-25', 'custom', ref, '2026-04-05', '2026-04-20')).toBe(false);
   });
 });
+
+describe('Разбор QR-кодов кассовых чеков ФНС (parseFnsReceiptQr)', () => {
+  it('извлекает сумму, дату, время и реквизиты из стандартного QR ФНС', async () => {
+    const { parseFnsReceiptQr } = await import('../utils/nativeHardware');
+    const parsed = parseFnsReceiptQr(
+      't=20260418T1432&s=1245.50&fn=7281440500912345&i=12345&fp=987654321&n=1'
+    );
+    expect(parsed).not.toBeNull();
+    expect(parsed?.amount).toBe(1245.5);
+    expect(parsed?.dateIso).toBe('2026-04-18');
+    expect(parsed?.time).toBe('14:32');
+    expect(parsed?.fn).toBe('7281440500912345');
+  });
+
+  it('поддерживает URL-обёртку и запятую в дробной части суммы, отбрасывает мусор', async () => {
+    const { parseFnsReceiptQr } = await import('../utils/nativeHardware');
+    const fromUrl = parseFnsReceiptQr(
+      'https://check.nalog.ru/?t=20260501T091500&s=499,90&n=1'
+    );
+    expect(fromUrl?.amount).toBe(499.9);
+    expect(fromUrl?.dateIso).toBe('2026-05-01');
+    expect(fromUrl?.time).toBe('09:15');
+
+    expect(parseFnsReceiptQr('https://example.com/hello')).toBeNull();
+    expect(parseFnsReceiptQr('')).toBeNull();
+  });
+});

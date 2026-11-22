@@ -4,6 +4,7 @@ import {
   Bell,
   BookOpen,
   Bot,
+  Camera,
   CheckCircle2,
   Cloud,
   Cpu,
@@ -16,6 +17,7 @@ import {
   Link2,
   Loader2,
   Lock,
+  Mic,
   Palette,
   Plus,
   RefreshCw,
@@ -70,6 +72,12 @@ import {
   openAndroidNotificationSettings,
   requestNotificationPermissions,
 } from '../utils/notifications';
+import {
+  checkHardwarePermissionStates,
+  ensureCameraPermission,
+  ensureMicrophonePermission,
+  openAndroidAppSettings,
+} from '../utils/nativeHardware';
 import { ModalShell } from './Modals';
 import { PWAInstallButton } from './PWAInstallButton';
 
@@ -224,6 +232,10 @@ export default function AppSettingsModal({
   const [llmState, setLlmState] = useState<LocalLlmState>(() => getLocalLlmState());
   const [notifPerm, setNotifPerm] = useState<'granted' | 'denied' | 'prompt' | 'unsupported'>('prompt');
   const [requestingNotif, setRequestingNotif] = useState(false);
+  const [hwPerms, setHwPerms] = useState<{ microphone: string; camera: string }>({
+    microphone: 'prompt',
+    camera: 'prompt',
+  });
   const webGpuOk = isWebGpuSupported();
   const isNativeApk = isNativeNotificationsPlatform();
   const isAndroidApk = isAndroidNativePlatform();
@@ -262,7 +274,12 @@ export default function AppSettingsModal({
     getNotificationPermissionState()
       .then(setNotifPerm)
       .catch(() => setNotifPerm('unsupported'));
-  }, []);
+    if (isAndroidApk) {
+      checkHardwarePermissionStates()
+        .then(setHwPerms)
+        .catch(() => {});
+    }
+  }, [isAndroidApk]);
 
   useEffect(() => {
     if (innerTab === 'kb') {
@@ -765,6 +782,28 @@ export default function AppSettingsModal({
     }
   };
 
+  const handleRequestMicPermission = async () => {
+    const res = await ensureMicrophonePermission();
+    const states = await checkHardwarePermissionStates();
+    setHwPerms(states);
+    if (res.granted) {
+      onShowToast('🎙️ Доступ к микрофону разрешён!');
+    } else {
+      onShowToast('Микрофон запрещён системой — включите его в настройках разрешений Android.');
+    }
+  };
+
+  const handleRequestCameraPermission = async () => {
+    const res = await ensureCameraPermission();
+    const states = await checkHardwarePermissionStates();
+    setHwPerms(states);
+    if (res.granted) {
+      onShowToast('📷 Доступ к камере для QR и чеков разрешён!');
+    } else {
+      onShowToast('Камера запрещена системой — включите её в настройках разрешений Android.');
+    }
+  };
+
   const handleEnableSystemNotifications = async () => {
     if (requestingNotif) return;
     setRequestingNotif(true);
@@ -1122,16 +1161,55 @@ export default function AppSettingsModal({
             </div>
 
             {isAndroidApk && (
-              <div className="pt-2 border-t border-white/10">
-                <button
-                  type="button"
-                  onClick={() => void handleOpenAndroidSoundSettings()}
-                  className="w-full py-2 px-3 rounded-xl bg-white/[0.06] hover:bg-white/[0.11] border border-white/15 text-xs font-bold text-slate-100 flex items-center justify-center gap-1.5 cursor-pointer transition"
-                >
-                  <span>⚙️ Системные настройки звука Android</span>
-                </button>
-                <div className="fin-sub mt-1">
-                  Откроет системный канал уведомлений — можно выбрать любой рингтон из памяти телефона.
+              <div className="pt-2 border-t border-white/10 space-y-2">
+                <div className="text-xs font-bold text-slate-100">
+                  Доступ к микрофону и камере (Android)
+                </div>
+                <div className="grid grid-cols-2 gap-1.5">
+                  <button
+                    type="button"
+                    onClick={() => void handleRequestMicPermission()}
+                    className={`py-2 px-2.5 rounded-xl border text-[11px] font-bold flex items-center justify-center gap-1.5 cursor-pointer transition ${
+                      hwPerms.microphone === 'granted'
+                        ? 'bg-emerald-500/15 border-emerald-400/35 text-emerald-200'
+                        : 'bg-white/[0.06] hover:bg-white/[0.11] border-white/15 text-slate-100'
+                    }`}
+                  >
+                    <Mic className="w-3.5 h-3.5 shrink-0" />
+                    <span>{hwPerms.microphone === 'granted' ? 'Микрофон ✓' : 'Микрофон'}</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void handleRequestCameraPermission()}
+                    className={`py-2 px-2.5 rounded-xl border text-[11px] font-bold flex items-center justify-center gap-1.5 cursor-pointer transition ${
+                      hwPerms.camera === 'granted'
+                        ? 'bg-emerald-500/15 border-emerald-400/35 text-emerald-200'
+                        : 'bg-white/[0.06] hover:bg-white/[0.11] border-white/15 text-slate-100'
+                    }`}
+                  >
+                    <Camera className="w-3.5 h-3.5 shrink-0" />
+                    <span>{hwPerms.camera === 'granted' ? 'Камера ✓' : 'Камера / QR'}</span>
+                  </button>
+                </div>
+
+                <div className="grid grid-cols-2 gap-1.5">
+                  <button
+                    type="button"
+                    onClick={() => void handleOpenAndroidSoundSettings()}
+                    className="py-2 px-2.5 rounded-xl bg-white/[0.06] hover:bg-white/[0.11] border border-white/15 text-[11px] font-bold text-slate-100 flex items-center justify-center gap-1 cursor-pointer transition"
+                  >
+                    <span>🔔 Звук Android</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void openAndroidAppSettings()}
+                    className="py-2 px-2.5 rounded-xl bg-white/[0.06] hover:bg-white/[0.11] border border-white/15 text-[11px] font-bold text-slate-100 flex items-center justify-center gap-1 cursor-pointer transition"
+                  >
+                    <span>⚙️ Разрешения</span>
+                  </button>
+                </div>
+                <div className="fin-sub">
+                  Если ранее нажали «Запретить», откройте «Разрешения» и включите Микрофон и Камеру.
                 </div>
               </div>
             )}

@@ -43,6 +43,12 @@ import {
   syncEnabledOnlineSources,
 } from '../utils/knowledgeBase';
 import { analyzeInvestments, getBrokerLabel } from '../utils/investments';
+import {
+  ensureMicrophonePermission,
+  isNativeAndroidHardware,
+  openAndroidAppSettings,
+  recognizeSpeechOnAndroid,
+} from '../utils/nativeHardware';
 import GlassSection from './GlassSection';
 
 interface AdvisorTabProps {
@@ -120,6 +126,7 @@ export default function AdvisorTab({
   const [recordSec, setRecordSec] = useState(0);
   const [busyStage, setBusyStage] = useState<'idle' | 'transcribing' | 'thinking'>('idle');
   const [voiceError, setVoiceError] = useState<string | null>(null);
+  const [voiceMicDenied, setVoiceMicDenied] = useState(false);
   const [llmState, setLlmState] = useState<LocalLlmState>(() => getLocalLlmState());
   const [showAddHabit, setShowAddHabit] = useState(false);
   const [newHabitTitle, setNewHabitTitle] = useState('');
@@ -563,7 +570,8 @@ export default function AdvisorTab({
         const code = ev?.error || '';
         if (code === 'aborted') return;
         if (code === 'not-allowed' || code === 'service-not-allowed') {
-          setVoiceError('Нет доступа к микрофону. Разрешите микрофон в настройках браузера.');
+          if (isNativeAndroidHardware()) setVoiceMicDenied(true);
+          setVoiceError('Нет доступа к микрофону. Разрешите микрофон в настройках устройства.');
         } else if (code === 'no-speech') {
           setVoiceError('Речь не распознана. Нажмите на микрофон и произнесите вопрос ещё раз.');
         } else {
@@ -590,9 +598,38 @@ export default function AdvisorTab({
   const handleStartVoiceQuestion = async () => {
     if (busyStage !== 'idle' || isRecording) return;
     setVoiceError(null);
+    setVoiceMicDenied(false);
 
     const isStaticHost =
       typeof window !== 'undefined' && /\.github\.io$|\.pages\.dev$|\.netlify\.app$/i.test(window.location.hostname);
+
+    // Native Android APK: prefer native system speech recognizer in offline/local mode
+    if (isNativeAndroidHardware() && (uiSettings.aiMode !== 'cloud' || isStaticHost)) {
+      const nativeRes = await recognizeSpeechOnAndroid('Задайте вопрос финансовому советнику');
+      if (nativeRes.denied) {
+        setVoiceMicDenied(true);
+        setVoiceError('Нет доступа к микрофону. Разрешите микрофон в настройках Android.');
+        return;
+      }
+      if (nativeRes.supported) {
+        if (nativeRes.text) {
+          window.setTimeout(() => {
+            void askQuestion(nativeRes.text!, true);
+          }, 120);
+        } else if (!nativeRes.cancelled) {
+          setVoiceError('Речь не распознана. Нажмите на микрофон и произнесите вопрос ещё раз.');
+        }
+        return;
+      }
+    }
+
+    // Request native Android RECORD_AUDIO permission before WebView mic access
+    const perm = await ensureMicrophonePermission();
+    if (!perm.granted) {
+      setVoiceMicDenied(true);
+      setVoiceError('Нет доступа к микрофону. Разрешите микрофон в настройках Android.');
+      return;
+    }
 
     // Keep voice 100% local/private when user chose Offline/Local LLM mode or when hosted on static GitHub Pages
     if (uiSettings.aiMode !== 'cloud' || isStaticHost) {
@@ -690,7 +727,8 @@ export default function AdvisorTab({
       }, 250);
     } catch {
       cleanupRecordingHandles();
-      setVoiceError('Нет доступа к микрофону. Разрешите доступ в настройках браузера.');
+      if (isNativeAndroidHardware()) setVoiceMicDenied(true);
+      setVoiceError('Нет доступа к микрофону. Разрешите доступ в настройках устройства.');
     }
   };
 
@@ -1010,8 +1048,18 @@ export default function AdvisorTab({
           )}
 
           {voiceError && (
-            <div className="rounded-xl bg-rose-500/15 border border-rose-400/35 px-3 py-2 text-xs text-rose-200">
-              {voiceError}
+            <div className="rounded-xl bg-rose-500/15 border border-rose-400/35 px-3 py-2 text-xs text-rose-200 space-y-2">
+              <div>{voiceError}</div>
+              {voiceMicDenied && isNativeAndroidHardware() && (
+                <button
+                  type="button"
+                  onClick={() => void openAndroidAppSettings()}
+                  className="w-full py-1.5 px-2.5 rounded-lg bg-amber-500/20 hover:bg-amber-500/30 border border-amber-400/40 text-xs font-bold text-amber-100 flex items-center justify-center gap-1.5 cursor-pointer transition"
+                >
+                  <Settings className="w-3.5 h-3.5" />
+                  <span>Открыть настройки разрешений Android</span>
+                </button>
+              )}
             </div>
           )}
 
