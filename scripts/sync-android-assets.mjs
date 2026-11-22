@@ -607,19 +607,54 @@ if (fs.existsSync(ANDROID_MANIFEST)) {
 }
 
 // =========================================================================
-// 6. AUTO-INCREMENT versionCode & versionName IN android/app/build.gradle
+// 6. EXPLICIT SIGNING CONFIG & AUTO-INCREMENT versionCode IN build.gradle
 // =========================================================================
 const appBuildGradle = path.join(ROOT, 'android', 'app', 'build.gradle');
-const envVersionCode = Number.parseInt(process.env.ANDROID_VERSION_CODE || '', 10);
-if (fs.existsSync(appBuildGradle) && Number.isFinite(envVersionCode) && envVersionCode >= 1) {
+if (fs.existsSync(appBuildGradle)) {
   let gradle = fs.readFileSync(appBuildGradle, 'utf8');
-  const nextGradle = gradle
-    .replace(/\bversionCode\s+\d+/, `versionCode ${envVersionCode}`)
-    .replace(/\bversionName\s+"[^"]*"/, `versionName "1.0.${envVersionCode}"`);
-  if (nextGradle !== gradle) {
-    fs.writeFileSync(appBuildGradle, nextGradle, 'utf8');
-    console.log(`[sync-android-assets] Updated build.gradle versionCode=${envVersionCode}, versionName="1.0.${envVersionCode}"`);
+  let gradleUpdated = false;
+
+  const envVersionCode = Number.parseInt(process.env.ANDROID_VERSION_CODE || '', 10);
+  if (Number.isFinite(envVersionCode) && envVersionCode >= 1) {
+    const targetVersionCode = 100 + envVersionCode;
+    const targetVersionName = `1.0.${envVersionCode}`;
+    const nextGradle = gradle
+      .replace(/\bversionCode\s+\d+/, `versionCode ${targetVersionCode}`)
+      .replace(/\bversionName\s+"[^"]*"/, `versionName "${targetVersionName}"`);
+    if (nextGradle !== gradle) {
+      gradle = nextGradle;
+      gradleUpdated = true;
+      console.log(
+        `[sync-android-assets] Updated build.gradle versionCode=${targetVersionCode}, versionName="${targetVersionName}"`
+      );
+    }
+  }
+
+  const explicitKeystore = path.join(ROOT, 'android', 'app', 'signing.keystore');
+  if (fs.existsSync(explicitKeystore) && !gradle.includes("file('signing.keystore')")) {
+    const signingBlock = `    signingConfigs {
+        debug {
+            storeFile file('signing.keystore')
+            storePassword System.getenv('ANDROID_KEYSTORE_PASSWORD') ?: 'android'
+            keyAlias System.getenv('ANDROID_KEY_ALIAS') ?: 'androiddebugkey'
+            keyPassword System.getenv('ANDROID_KEY_PASSWORD') ?: 'android'
+        }
+    }
+    buildTypes {
+        debug {
+            signingConfig signingConfigs.debug
+        }`;
+    const nextGradle = gradle.replace(/buildTypes\s*\{/, signingBlock);
+    if (nextGradle !== gradle) {
+      gradle = nextGradle;
+      gradleUpdated = true;
+      console.log('[sync-android-assets] Configured explicit signingConfigs.debug -> android/app/signing.keystore');
+    }
+  }
+
+  if (gradleUpdated) {
+    fs.writeFileSync(appBuildGradle, gradle, 'utf8');
   }
 }
 
-console.log('[sync-android-assets] All Android icons, .wav sounds, plugins, manifest, and version synced successfully.');
+console.log('[sync-android-assets] All Android icons, .wav sounds, plugins, manifest, signing, and version synced successfully.');

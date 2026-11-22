@@ -71,26 +71,28 @@ jobs:
             echo "has_secret=false" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Restore cached Android debug keystore (fallback if no GitHub Secret)
+      - name: Restore cached Android signing keystore (fallback if no GitHub Secret)
         if: steps.check_keystore.outputs.has_secret != 'true'
         uses: actions/cache@v4
         with:
-          path: ~/.android/debug.keystore
-          key: android-debug-keystore-v1
+          path: .keystore-cache/signing.keystore
+          key: android-signing-keystore-v2
 
       - name: Prepare consistent Android signing keystore
         env:
           ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
         run: |
-          mkdir -p ~/.android
+          mkdir -p .keystore-cache
           if [ -n "$ANDROID_KEYSTORE_BASE64" ]; then
-            echo "$ANDROID_KEYSTORE_BASE64" | base64 --decode > ~/.android/debug.keystore
+            printf '%s' "$ANDROID_KEYSTORE_BASE64" | tr -d '\r\n ' | base64 --decode > android/app/signing.keystore
             echo "Using permanent keystore from GitHub Secret ANDROID_KEYSTORE_BASE64"
-          elif [ -f ~/.android/debug.keystore ]; then
-            echo "Using cached ~/.android/debug.keystore (consistent APK updates enabled)"
+          elif [ -f .keystore-cache/signing.keystore ]; then
+            cp .keystore-cache/signing.keystore android/app/signing.keystore
+            echo "Using cached .keystore-cache/signing.keystore (consistent APK updates enabled)"
           else
             keytool -genkeypair -v \
-              -keystore ~/.android/debug.keystore \
+              -keystore .keystore-cache/signing.keystore \
+              -storetype PKCS12 \
               -storepass android \
               -alias androiddebugkey \
               -keypass android \
@@ -98,19 +100,30 @@ jobs:
               -keysize 2048 \
               -validity 10000 \
               -dname "CN=Moi Finansy,O=Personal,C=RU"
-            echo "Generated initial ~/.android/debug.keystore (will be cached for future updates)"
+            cp .keystore-cache/signing.keystore android/app/signing.keystore
+            echo "Generated initial signing keystore (will be cached for future updates)"
           fi
+          ls -lh android/app/signing.keystore
 
-      - name: Apply matching Android APK launcher, permissions & version
+      - name: Apply matching Android APK launcher, permissions, signing & version
         env:
           ANDROID_VERSION_CODE: ${{ github.run_number }}
         run: node scripts/sync-android-assets.mjs
 
       - name: Compile Android Debug APK
+        env:
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
         run: |
           cd android
           chmod +x gradlew
           ./gradlew assembleDebug --no-daemon
+
+      - name: Verify APK signing certificate fingerprint
+        run: |
+          echo "=== APK Certificate Fingerprint (must match between updates) ==="
+          keytool -printcert -jarfile android/app/build/outputs/apk/debug/app-debug.apk | grep -E "Owner:|SHA256:" || true
 
       - name: Upload app-debug.apk artifact
         uses: actions/upload-artifact@v4
