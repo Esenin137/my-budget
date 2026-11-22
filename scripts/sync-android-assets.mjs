@@ -341,7 +341,181 @@ public class NotificationSettingsPlugin extends Plugin {
   'utf8'
 );
 
-// Register NotificationSettingsPlugin in MainActivity.java cleanly
+// Register NotificationSettingsPlugin & DeviceHardwarePlugin in MainActivity.java cleanly
+fs.writeFileSync(
+  path.join(ANDROID_JAVA_PKG, 'DeviceHardwarePlugin.java'),
+  `package ru.mybudget.app;
+
+import android.Manifest;
+import android.app.Activity;
+import android.content.Intent;
+import android.net.Uri;
+import android.provider.Settings;
+import android.speech.RecognizerIntent;
+import androidx.activity.result.ActivityResult;
+import com.getcapacitor.JSObject;
+import com.getcapacitor.PermissionState;
+import com.getcapacitor.Plugin;
+import com.getcapacitor.PluginCall;
+import com.getcapacitor.PluginMethod;
+import com.getcapacitor.annotation.ActivityCallback;
+import com.getcapacitor.annotation.CapacitorPlugin;
+import com.getcapacitor.annotation.Permission;
+import com.getcapacitor.annotation.PermissionCallback;
+import java.util.ArrayList;
+
+@CapacitorPlugin(
+    name = "DeviceHardware",
+    permissions = {
+        @Permission(
+            alias = "microphone",
+            strings = { Manifest.permission.RECORD_AUDIO }
+        ),
+        @Permission(
+            alias = "camera",
+            strings = { Manifest.permission.CAMERA }
+        )
+    }
+)
+public class DeviceHardwarePlugin extends Plugin {
+
+    @PluginMethod
+    public void checkHardwarePermissions(PluginCall call) {
+        JSObject ret = new JSObject();
+        ret.put("microphone", getPermissionState("microphone").toString());
+        ret.put("camera", getPermissionState("camera").toString());
+        call.resolve(ret);
+    }
+
+    @PluginMethod
+    public void requestMicrophonePermission(PluginCall call) {
+        if (getPermissionState("microphone") == PermissionState.GRANTED) {
+            JSObject ret = new JSObject();
+            ret.put("granted", true);
+            ret.put("state", "granted");
+            call.resolve(ret);
+            return;
+        }
+        requestPermissionForAlias("microphone", call, "micPermissionCallback");
+    }
+
+    @PermissionCallback
+    private void micPermissionCallback(PluginCall call) {
+        PermissionState state = getPermissionState("microphone");
+        JSObject ret = new JSObject();
+        ret.put("granted", state == PermissionState.GRANTED);
+        ret.put("state", state.toString());
+        call.resolve(ret);
+    }
+
+    @PluginMethod
+    public void requestCameraPermission(PluginCall call) {
+        if (getPermissionState("camera") == PermissionState.GRANTED) {
+            JSObject ret = new JSObject();
+            ret.put("granted", true);
+            ret.put("state", "granted");
+            call.resolve(ret);
+            return;
+        }
+        requestPermissionForAlias("camera", call, "cameraPermissionCallback");
+    }
+
+    @PermissionCallback
+    private void cameraPermissionCallback(PluginCall call) {
+        PermissionState state = getPermissionState("camera");
+        JSObject ret = new JSObject();
+        ret.put("granted", state == PermissionState.GRANTED);
+        ret.put("state", state.toString());
+        call.resolve(ret);
+    }
+
+    @PluginMethod
+    public void recognizeSpeech(PluginCall call) {
+        if (getPermissionState("microphone") != PermissionState.GRANTED) {
+            requestPermissionForAlias("microphone", call, "speechMicPermissionCallback");
+            return;
+        }
+        launchSpeechIntent(call);
+    }
+
+    @PermissionCallback
+    private void speechMicPermissionCallback(PluginCall call) {
+        if (getPermissionState("microphone") != PermissionState.GRANTED) {
+            JSObject ret = new JSObject();
+            ret.put("granted", false);
+            ret.put("denied", true);
+            ret.put("text", "");
+            call.resolve(ret);
+            return;
+        }
+        launchSpeechIntent(call);
+    }
+
+    private void launchSpeechIntent(PluginCall call) {
+        String lang = call.getString("language", "ru-RU");
+        String prompt = call.getString("prompt", "Говорите...");
+
+        Intent intent = new Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH);
+        intent.putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM);
+        intent.putExtra(RecognizerIntent.EXTRA_LANGUAGE, lang);
+        intent.putExtra(RecognizerIntent.EXTRA_LANGUAGE_PREFERENCE, lang);
+        intent.putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1);
+        if (prompt != null && !prompt.isEmpty()) {
+            intent.putExtra(RecognizerIntent.EXTRA_PROMPT, prompt);
+        }
+
+        try {
+            startActivityForResult(call, intent, "speechResultCallback");
+        } catch (Exception e) {
+            JSObject ret = new JSObject();
+            ret.put("unavailable", true);
+            ret.put("granted", true);
+            ret.put("text", "");
+            call.resolve(ret);
+        }
+    }
+
+    @ActivityCallback
+    private void speechResultCallback(PluginCall call, ActivityResult result) {
+        if (call == null) {
+            return;
+        }
+        JSObject ret = new JSObject();
+        ret.put("granted", true);
+        if (result.getResultCode() == Activity.RESULT_OK && result.getData() != null) {
+            ArrayList<String> matches = result.getData().getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS);
+            String best = (matches != null && !matches.isEmpty() && matches.get(0) != null) ? matches.get(0).trim() : "";
+            ret.put("text", best);
+            ret.put("cancelled", best.isEmpty());
+        } else {
+            ret.put("text", "");
+            ret.put("cancelled", true);
+        }
+        call.resolve(ret);
+    }
+
+    @PluginMethod
+    public void openAppSettings(PluginCall call) {
+        String pkg = getContext().getPackageName();
+        boolean opened = false;
+        try {
+            Intent intent = new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS);
+            intent.setData(Uri.parse("package:" + pkg));
+            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            getContext().startActivity(intent);
+            opened = true;
+        } catch (Exception ignored) {
+            opened = false;
+        }
+        JSObject ret = new JSObject();
+        ret.put("opened", opened);
+        call.resolve(ret);
+    }
+}
+`,
+  'utf8'
+);
+
 fs.writeFileSync(
   path.join(ANDROID_JAVA_PKG, 'MainActivity.java'),
   `package ru.mybudget.app;
@@ -353,23 +527,38 @@ public class MainActivity extends BridgeActivity {
     @Override
     public void onCreate(Bundle savedInstanceState) {
         registerPlugin(NotificationSettingsPlugin.class);
+        registerPlugin(DeviceHardwarePlugin.class);
         super.onCreate(savedInstanceState);
     }
 }
 `,
   'utf8'
 );
-console.log('[sync-android-assets] Installed NotificationSettingsPlugin & updated MainActivity.java');
+console.log('[sync-android-assets] Installed NotificationSettingsPlugin, DeviceHardwarePlugin & updated MainActivity.java');
 
 // =========================================================================
-// 5. ANDROID 13+ POST_NOTIFICATIONS & VIBRATE PERMISSIONS
+// 5. ANDROID PERMISSIONS (NOTIFICATIONS, MICROPHONE, CAMERA), FEATURES & QUERIES
 // =========================================================================
 if (fs.existsSync(ANDROID_MANIFEST)) {
   let manifest = fs.readFileSync(ANDROID_MANIFEST, 'utf8');
   const neededPermissions = [
     'android.permission.POST_NOTIFICATIONS',
     'android.permission.VIBRATE',
+    'android.permission.RECORD_AUDIO',
+    'android.permission.MODIFY_AUDIO_SETTINGS',
+    'android.permission.CAMERA',
   ];
+  const neededFeatures = [
+    'android.hardware.microphone',
+    'android.hardware.camera',
+    'android.hardware.camera.autofocus',
+  ];
+  const neededQueryActions = [
+    'android.media.action.IMAGE_CAPTURE',
+    'android.speech.RecognitionService',
+    'android.speech.action.RECOGNIZE_SPEECH',
+  ];
+
   let updated = false;
   for (const perm of neededPermissions) {
     if (!manifest.includes(perm)) {
@@ -380,10 +569,41 @@ if (fs.existsSync(ANDROID_MANIFEST)) {
       updated = true;
     }
   }
+
+  for (const feat of neededFeatures) {
+    if (!manifest.includes(`android:name="${feat}"`)) {
+      manifest = manifest.replace(
+        '<application',
+        `    <uses-feature android:name="${feat}" android:required="false" />\n\n    <application`
+      );
+      updated = true;
+    }
+  }
+
+  const missingIntents = neededQueryActions.filter((action) => !manifest.includes(action));
+  if (missingIntents.length > 0) {
+    const intentBlocks = missingIntents
+      .map(
+        (action) =>
+          `        <intent>\n            <action android:name="${action}" />\n        </intent>`
+      )
+      .join('\n');
+
+    if (manifest.includes('</queries>')) {
+      manifest = manifest.replace('</queries>', `${intentBlocks}\n    </queries>`);
+    } else {
+      manifest = manifest.replace(
+        '<application',
+        `    <queries>\n${intentBlocks}\n    </queries>\n\n    <application`
+      );
+    }
+    updated = true;
+  }
+
   if (updated) {
     fs.writeFileSync(ANDROID_MANIFEST, manifest, 'utf8');
-    console.log('[sync-android-assets] Added notification permissions to AndroidManifest.xml');
+    console.log('[sync-android-assets] Updated AndroidManifest.xml with notifications, microphone, camera permissions & queries');
   }
 }
 
-console.log('[sync-android-assets] All Android icons, .wav sounds, plugin, and manifest synced successfully.');
+console.log('[sync-android-assets] All Android icons, .wav sounds, plugins, and manifest synced successfully.');
