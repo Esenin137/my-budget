@@ -606,4 +606,20 @@ if (fs.existsSync(ANDROID_MANIFEST)) {
   }
 }
 
-console.log('[sync-android-assets] All Android icons, .wav sounds, plugins, and manifest synced successfully.');
+// =========================================================================
+// 6. AUTO-INCREMENT versionCode & versionName IN android/app/build.gradle
+// =========================================================================
+const appBuildGradle = path.join(ROOT, 'android', 'app', 'build.gradle');
+const envVersionCode = Number.parseInt(process.env.ANDROID_VERSION_CODE || '', 10);
+if (fs.existsSync(appBuildGradle) && Number.isFinite(envVersionCode) && envVersionCode >= 1) {
+  let gradle = fs.readFileSync(appBuildGradle, 'utf8');
+  const nextGradle = gradle
+    .replace(/\bversionCode\s+\d+/, `versionCode ${envVersionCode}`)
+    .replace(/\bversionName\s+"[^"]*"/, `versionName "1.0.${envVersionCode}"`);
+  if (nextGradle !== gradle) {
+    fs.writeFileSync(appBuildGradle, nextGradle, 'utf8');
+    console.log(`[sync-android-assets] Updated build.gradle versionCode=${envVersionCode}, versionName="1.0.${envVersionCode}"`);
+  }
+}
+
+console.log('[sync-android-assets] All Android icons, .wav sounds, plugins, manifest, and version synced successfully.');

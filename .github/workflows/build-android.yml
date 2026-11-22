@@ -60,7 +60,50 @@ jobs:
           fi
           npx cap sync android
 
-      - name: Apply matching Android APK launcher & notification icons
+      - name: Check signing secret availability
+        id: check_keystore
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+        run: |
+          if [ -n "$ANDROID_KEYSTORE_BASE64" ]; then
+            echo "has_secret=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_secret=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Restore cached Android debug keystore (fallback if no GitHub Secret)
+        if: steps.check_keystore.outputs.has_secret != 'true'
+        uses: actions/cache@v4
+        with:
+          path: ~/.android/debug.keystore
+          key: android-debug-keystore-v1
+
+      - name: Prepare consistent Android signing keystore
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+        run: |
+          mkdir -p ~/.android
+          if [ -n "$ANDROID_KEYSTORE_BASE64" ]; then
+            echo "$ANDROID_KEYSTORE_BASE64" | base64 --decode > ~/.android/debug.keystore
+            echo "Using permanent keystore from GitHub Secret ANDROID_KEYSTORE_BASE64"
+          elif [ -f ~/.android/debug.keystore ]; then
+            echo "Using cached ~/.android/debug.keystore (consistent APK updates enabled)"
+          else
+            keytool -genkeypair -v \
+              -keystore ~/.android/debug.keystore \
+              -storepass android \
+              -alias androiddebugkey \
+              -keypass android \
+              -keyalg RSA \
+              -keysize 2048 \
+              -validity 10000 \
+              -dname "CN=Moi Finansy,O=Personal,C=RU"
+            echo "Generated initial ~/.android/debug.keystore (will be cached for future updates)"
+          fi
+
+      - name: Apply matching Android APK launcher, permissions & version
+        env:
+          ANDROID_VERSION_CODE: ${{ github.run_number }}
         run: node scripts/sync-android-assets.mjs
 
       - name: Compile Android Debug APK
